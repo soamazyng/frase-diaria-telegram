@@ -30,6 +30,12 @@ from frase_diaria.telegram.canal import TelegramHttp
 PREFIXO_DOS_PARAMETROS = "/frase-diaria/"
 
 
+def _bot_legado(guardados: dict[str, str]) -> str:
+    """Usa o parâmetro auxiliar quando existir; senão deriva-o do token."""
+    token = guardados["telegram-bot-token"]
+    return guardados.get("telegram-bot-legado-id") or token.split(":", 1)[0]
+
+
 @lru_cache(maxsize=1)
 def segredos() -> dict[str, str]:
     """Lê os segredos do Parameter Store uma vez por container.
@@ -59,6 +65,7 @@ def _tabela() -> Any:
 def montar_receber_comando() -> ReceberComando:
     """A fronteira HTTP: valida, registra e despacha — nunca entrega a frase."""
     guardados = segredos()
+    bot_legado = _bot_legado(guardados)
     return ReceberComando(
         politica=PoliticaDeAcesso(
             segredo_esperado=guardados["webhook-secret"],
@@ -68,7 +75,7 @@ def montar_receber_comando() -> ReceberComando:
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         relogio=RelogioDoSistema(),
         pedidos=RepositorioDePedidosDynamo(
-            tabela=_tabela(), bot_legado=guardados["telegram-bot-legado-id"]
+            tabela=_tabela(), bot_legado=bot_legado
         ),
         bot=guardados["telegram-bot-token"].split(":", 1)[0],
         despachante=DespachanteLambda(
@@ -88,6 +95,7 @@ def montar_processar_pedido() -> ProcessarPedido:
     ticket 12.
     """
     guardados = segredos()
+    bot_legado = _bot_legado(guardados)
     relogio = RelogioDoSistema()
     sincronizar = SincronizarColecao(
         leitor=LeitorDeColecao(ClienteNotionHttp(token=guardados["notion-token"])),
@@ -99,7 +107,7 @@ def montar_processar_pedido() -> ProcessarPedido:
         repositorio=RepositorioDePedidosDynamo(
             tabela=_tabela(),
             versao=os.environ["VERSAO_DA_APLICACAO"],
-            bot_legado=guardados["telegram-bot-legado-id"],
+            bot_legado=bot_legado,
         ),
         fonte=FonteDeFrasesNotion(sincronizar=sincronizar),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
@@ -107,7 +115,7 @@ def montar_processar_pedido() -> ProcessarPedido:
         relogio=relogio,
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
         reserva=ReservaTransacional(
-            tabela=_tabela(), bot_legado=guardados["telegram-bot-legado-id"]
+            tabela=_tabela(), bot_legado=bot_legado
         ),
     )
 

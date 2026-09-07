@@ -8,6 +8,7 @@ casa — com a suíte inteira verde. Estes testes prendem o nome da variável.
 import pytest
 from fastapi.testclient import TestClient
 
+from frase_diaria.infraestrutura.composicao import _bot_legado
 from frase_diaria.infraestrutura.configuracao import (
     VARIAVEL_DE_VERSAO,
     VERSAO_EM_DESENVOLVIMENTO,
@@ -49,3 +50,9 @@ def test_health_sem_versao_explicita_relata_a_versao_do_ambiente(
     cliente = TestClient(criar_aplicacao())
 
     assert cliente.get("/health").json()["versao"] == "sha-do-commit-publicado"
+
+
+def test_identificador_auxiliar_do_bot_pode_faltar_no_ssm() -> None:
+    guardados = {"telegram-bot-token": "123456:token"}
+
+    assert _bot_legado(guardados) == "123456"
