@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Aplicação do frase-diaria-telegram: função Lambda, entrada HTTP e logs.
+  Republicar esta stack não toca na stack de dados, que guarda o histórico.
+
+Parameters:
+  Prefixo:
+    Type: String
+    Default: frase-diaria
+    Description: Prefixo dos nomes dos recursos; precisa casar com a stack de dados.
+  Versao:
+    Type: String
+    Default: desenvolvimento
+    Description: >
+      Identificador da versão publicada, devolvido por GET /health. O pipeline
+      injeta aqui o SHA do commit avaliado.
+  RetencaoDeLogsEmDias:
+    Type: Number
+    Default: 14
+    Description: Retenção dos logs técnicos. Não substituem o histórico, que vive no DynamoDB.
+
+Globals:
+  Function:
+    Runtime: python3.13
+    # 128 MB é o mínimo; o trabalho é de E/S, não de CPU.
+    MemorySize: 128
+    Timeout: 30
+    Architectures:
+      - arm64
+
+Resources:
+  # Stage $default não prefixa o caminho: GET /health chega ao FastAPI como
+  # /health. Uma REST API com stage Prod entregaria /Prod/health e daria 404.
+  Http:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      # Sem docs públicas e sem CORS: o bot é de usuária única.
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          title: !Sub "${Prefixo}-http"
+          version: "1.0"
+        paths:
+          /health:
+            get:
+              responses:
+                "200":
+                  description: saúde e versão
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                payloadFormatVersion: "2.0"
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Funcao.Arn}/invocations"
+
+  Funcao:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-http"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.http.lambda_handler.handler
+      Environment:
+        Variables:
+          VERSAO_DA_APLICACAO: !Ref Versao
+          TABELA_ESTADO:
+            Fn::ImportValue: !Sub "${Prefixo}-TabelaNome"
+      Policies:
+        # Permissões específicas por função: só a tabela deste projeto, só as
+        # ações que a aplicação usa. Nada de acesso amplo a DynamoDB.
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:TransactWriteItems
+                - dynamodb:TransactGetItems
+              Resource:
+                - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+                - !Sub
+                  - "${Arn}/index/*"
+                  - Arn:
+                      Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Http
+            Path: /health
+            Method: GET
+
+  # Declarado explicitamente para controlar a retenção. Sem isso a Lambda cria
+  # o grupo com retenção infinita, que cresce e passa a custar.
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-http"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+Outputs:
+  UrlHealth:
+    Description: URL pública do diagnóstico.
+    Value: !Sub "https://${Http}.execute-api.${AWS::Region}.${AWS::URLSuffix}/health"
+  VersaoPublicada:
+    Value: !Ref Versao

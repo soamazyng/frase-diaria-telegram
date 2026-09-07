@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Estado do repositório
 
-Ticket 02 concluído: existe esqueleto Python com testes e análise estática passando, e `GET /health` local. Nenhum comportamento de produto foi implementado ainda — sem Notion, sem Telegram, sem persistência, sem AWS.
+Tickets 01, 02 e 03 concluídos. Existe esqueleto Python com testes e análise estática passando, e `GET /health` publicado na AWS em duas stacks (`frase-diaria-dados` e `frase-diaria-app`). Nenhum comportamento de produto ainda — sem Notion, sem Telegram, sem seleção de frases.
+
+**A tabela `frase-diaria-estado` é `Retain`.** A stack de aplicação só a importa; republicar a aplicação nunca alcança os dados. Isso foi exercitado, não presumido.
 
 **Leia a spec antes de escrever qualquer código.** Ela é a fonte de verdade do escopo, do vocabulário de domínio e dos 31 critérios de aceite (AC01–AC31). Precedência declarada na própria spec: refino aprovado > `Refino-inicial.txt` > página original do Notion.
 
@@ -22,7 +24,20 @@ make formatar     # corrige o corrigível (ruff --fix e format)
 
 Um único teste: `uv run pytest tests/dominio/test_tempo.py::test_fuso_local_e_sao_paulo`
 
-Não há passo de build separado ainda — ele nasce com o empacotamento SAM no ticket 03.
+### Publicação na AWS
+
+```sh
+make publicar-dados                              # uma vez; a stack de dados quase não muda
+VERSAO=$(git rev-parse HEAD) make publicar-app   # a cada versão
+```
+
+O SAM roda via `uvx --from aws-sam-cli sam` porque o SAM instalado na máquina
+(1.125.0) não conhece `python3.13`. Não troque por `sam` direto sem checar a versão.
+
+O empacotamento instala dependências para `aarch64-manylinux2014`, **não** para a
+máquina local — instalar no macOS produz binários que só quebram em execução.
+
+`GET /health`: https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
 
 `tests/test_arquitetura.py` falha se `dominio` ou `aplicacao` importarem `fastapi`, `mangum`, `starlette`, `boto3` ou `botocore`. Se precisar de uma dessas numa camada pura, o desenho está errado, não o teste.
 

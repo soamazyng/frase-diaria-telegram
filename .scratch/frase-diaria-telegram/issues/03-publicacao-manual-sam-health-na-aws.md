@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 — Elegibilidade e estimativa de custo AWS/GitHub; 02 — Esqueleto do projeto e /health local.
 
-**Status:** ready-for-agent
+**Status:** concluído em 2026-09-07 — procedimento em `docs/03-publicacao-manual.md`
 
-- [ ] SAM declara Lambda, HTTP API, tabela DynamoDB, grupo de logs e permissões IAM específicas por função.
-- [ ] Recursos duráveis de dados ficam em stack separada dos recursos de aplicação, com proteção contra exclusão e retenção configuradas.
-- [ ] Criptografia dos serviços habilitada; nenhum recurso exige VPC ou NAT.
-- [ ] Publicação por comando manual documentada, incluindo os parâmetros necessários.
-- [ ] `GET /health` público responde com o identificador da versão publicada.
-- [ ] Republicar a stack de aplicação não altera nem apaga a stack de dados.
-- [ ] Retenção dos logs técnicos configurada (proposta inicial de 14 dias).
+- [x] SAM declara Lambda, HTTP API, tabela DynamoDB, grupo de logs e permissões IAM específicas por função.
+- [x] Recursos duráveis de dados ficam em stack separada dos recursos de aplicação, com proteção contra exclusão e retenção configuradas.
+- [x] Criptografia dos serviços habilitada; nenhum recurso exige VPC ou NAT.
+- [x] Publicação por comando manual documentada, incluindo os parâmetros necessários.
+- [x] `GET /health` público responde com o identificador da versão publicada.
+- [x] Republicar a stack de aplicação não altera nem apaga a stack de dados.
+- [x] Retenção dos logs técnicos configurada (proposta inicial de 14 dias).
