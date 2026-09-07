@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Leia `rules.md` antes de tocar em segredos, sondar permissões AWS, publicar,
+integrar uma API com credencial, ou escrever um teste que protege invariante.**
+Ele guarda as armadilhas já pagas neste projeto, cada uma com o incidente que a
+originou. Este arquivo diz o que o projeto é; `rules.md` diz como trabalhar nele.
+
 ## Estado do repositório
 
 Tickets 01, 02 e 03 concluídos. Existe esqueleto Python com testes e análise estática passando, e `GET /health` publicado na AWS em duas stacks (`frase-diaria-dados` e `frase-diaria-app`). Nenhum comportamento de produto ainda — sem Notion, sem Telegram, sem seleção de frases.
@@ -31,11 +36,8 @@ make publicar-dados                              # uma vez; a stack de dados qua
 VERSAO=$(git rev-parse HEAD) make publicar-app   # a cada versão
 ```
 
-O SAM roda via `uvx --from aws-sam-cli sam` porque o SAM instalado na máquina
-(1.125.0) não conhece `python3.13`. Não troque por `sam` direto sem checar a versão.
-
-O empacotamento instala dependências para `aarch64-manylinux2014`, **não** para a
-máquina local — instalar no macOS produz binários que só quebram em execução.
+O SAM roda via `uvx --from aws-sam-cli sam`: o instalado na máquina (1.125.0) não
+conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 
 `GET /health`: https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
 `POST /telegram/webhook`: mesma origem, registrado no Telegram.
@@ -43,13 +45,10 @@ máquina local — instalar no macOS produz binários que só quebram em execuç
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
-`telegram-chat-id` (**672024065** — é a conversa da usuária, não o id do bot,
-que é 8340090374), `webhook-secret`. Nunca colar valores de segredo em conversa
-com agente: gravar sempre de um terminal separado. A Lambda cacheia os segredos
-por container, então mudar um parâmetro exige republicar para valer de imediato.
+`telegram-chat-id` (**672024065** — a conversa da usuária; o id do bot é
+8340090374 e não serve), `webhook-secret`.
 
-`getUpdates` não funciona enquanto o webhook estiver registrado; para depurar,
-`deleteWebhook` antes e registrar de novo depois.
+Manuseio de segredos, cache por container e depuração do webhook: `rules.md`.
 
 `tests/test_arquitetura.py` falha se `dominio` ou `aplicacao` importarem `fastapi`, `mangum`, `starlette`, `boto3` ou `botocore`. Se precisar de uma dessas numa camada pura, o desenho está errado, não o teste.
 
@@ -164,7 +163,6 @@ Já fechadas — implemente conforme descrito, não reabra:
 - **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 3.000 do Pro — ~US$34/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
 - **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
 - **Segredos:** usar **SSM Parameter Store** (`SecureString`), que é gratuito. Não usar Secrets Manager: custaria ~US$0,40/segredo/mês sem vantagem aqui.
-- **Sondar permissões:** prefira o teste real com entrada inválida a `iam:SimulatePrincipalPolicy` — o simulador não enxerga políticas herdadas de grupo e subestima o que a identidade pode fazer. Exceção: `iam:CreateOpenIDConnectProvider` **não valida o thumbprint** e cria o recurso de verdade; não sondar essa API com entrada inválida.
 - **Sem VPC nem NAT.** Um NAT Gateway custaria ~US$32/mês sozinho e nenhum requisito exige rede privada.
 
 ## Decisões ainda em aberto
