@@ -27,3 +27,14 @@ encerra o pedido em definitivo, e tanto a retentativa da Lambda quanto o
 reconciliador saem pelo `if pedido.estado.terminal`. O AC13 exige distinguir
 transitório de permanente: o primeiro agenda nova tentativa do mesmo pedido, o
 segundo encerra com diagnóstico.
+
+## Observado no ticket 06, na AWS
+
+Um `/frase` enviado em rajada caiu em `AGUARDANDO_RESERVA` — a última frase livre
+estava reservada pelo pedido anterior. O pedido ficou corretamente fora de estado
+terminal, mas **nenhum mecanismo o retomou**: as retentativas da invocação
+assíncrona se esgotaram antes de o ciclo virar, e ele só foi entregue por
+invocação manual.
+
+O reconciliador periódico deste ticket precisa alcançar pedidos nesse estado, não
+apenas os da diária.

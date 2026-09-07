@@ -104,3 +104,25 @@ O paliativo está no consumo: quando o ciclo perdeu a reserva de uma frase já
 entregue, o worker registra o desvio e consome mesmo assim, em vez de deixá-la
 elegível de novo. A proteção de verdade — lease com prazo e token de versão — é
 o **ticket 09**.
+
+## Exercitado na AWS em 2026-09-07
+
+Seis `/frase` em rajada, contra a coleção de cinco frases.
+
+**Ciclo 1** entregou as cinco sem repetir: `fixture-03`, `04`, `05` (duas
+partes), `01`, `02`. **Ciclo 2** abriu sozinho e começou por `fixture-03` — a
+última do ciclo anterior era `fixture-02`, e a regra da virada foi respeitada.
+
+**Um pedido caiu em `AGUARDANDO_RESERVA`.** Enviados em rajada, um deles rodou
+quando a última frase livre estava reservada pelo pedido anterior, ainda em
+entrega. O worker registrou a tentativa como `aguardando`, propagou
+`ReservaPendente` e deixou o pedido **fora de estado terminal**.
+
+Invocar o worker de novo nesse pedido, depois de o ciclo virar, entregou a frase
+normalmente. É a prova de que a distinção entre `COLECAO_VAZIA` e
+`AGUARDANDO_RESERVA` importa: encerrado como falha, o pedido teria batido no
+`estado.terminal` e a retomada não faria nada.
+
+O que falta é **quem** retoma sozinho. As retentativas da invocação assíncrona se
+esgotaram antes de o ciclo virar, e o pedido ficou parado até a retomada manual.
+Esse é o papel do reconciliador do ticket 14.
