@@ -198,17 +198,30 @@ class ProcessarPedido:
             return self._encerrar_sem_conteudo(pedido, ciclo, versao_ciclo, sequencial)
 
         frase, ciclo = escolha
-        if pedido.frase_reservada is None:
+        pedido_para_reservar = pedido
+        if pedido.frase_reservada is not None and pedido.frase_reservada != frase.identidade:
+            # `_escolher` já liberou a reserva antiga no ciclo devolvido; falta
+            # só sair do estado atual antes de reservar a nova frase abaixo.
+            # `pedido` (a variável externa) continua intocado até a transação
+            # confirmar: se ela falhar, ele ainda é a única referência à
+            # reserva antiga, que segue persistida no ciclo (ver except abaixo).
+            pedido_para_reservar = pedido.liberar_frase_excluida(
+                "frase reservada não está mais na coleção; selecionando outra"
+            )
+
+        if pedido_para_reservar.frase_reservada is None:
             # Ciclo e pedido em uma transação: gravar um sem o outro deixaria uma
             # reserva órfã que nada libera, travando o ciclo para sempre.
-            candidato = pedido.reservar(frase.identidade)
+            candidato = pedido_para_reservar.reservar(frase.identidade)
             try:
                 self.reserva.efetivar(candidato, ciclo, versao_ciclo, sequencial)
             except ConflitoDeConcorrencia as conflito:
-                # Outro executor já avançou o ciclo a partir da mesma versão que
-                # lemos: a transação inteira foi recusada, então `pedido` — não
-                # `candidato` — segue refletindo o que está de fato persistido.
-                # Uma nova tentativa relê tudo do zero (ticket 09).
+                # A transação inteira foi recusada — nem a reserva antiga foi
+                # liberada, nem a nova foi efetivada. Gravar `pedido_para_reservar`
+                # (frase_reservada=None) aqui órfãos a reserva antiga no ciclo:
+                # nenhum pedido mais a referenciaria para liberá-la depois. `pedido`
+                # segue refletindo o que está de fato persistido; uma nova
+                # tentativa relê tudo do zero e retoma a troca (ticket 09).
                 _log.warning("conflito de concorrência ao reservar; nova tentativa retomará")
                 motivo = "conflito de concorrência ao reservar frase"
                 self.repositorio.salvar(pedido.aguardar_tentativa(motivo), sequencial)
@@ -218,6 +231,8 @@ class ProcessarPedido:
             # o consumo logo abaixo tentaria gravar com a versão já superada e
             # cairia na retentativa por engano, mesmo sem nenhuma concorrência.
             versao_ciclo += 1
+        else:
+            pedido = pedido_para_reservar
 
         if pedido.estado is not EstadoDoPedido.ENVIANDO:
             pedido = pedido.iniciar_envio()
@@ -229,14 +244,24 @@ class ProcessarPedido:
 
         A reserva existente vence o sorteio: uma nova tentativa reutiliza a frase
         já reservada, porque sortear outra deixaria a primeira consumida sem ter
-        sido entregue (spec, 4.4).
+        sido entregue (spec, 4.4). Se a frase reservada sumiu da fonte (edição
+        que a excluiu) e nada foi entregue ainda, a reserva é liberada e a
+        seleção roda de novo como se o pedido nunca tivesse reservado nada —
+        trocar no meio de uma entrega parcial quebraria a invariante de que uma
+        frase é uma entrega lógica única, por isso só acontece sem nada
+        confirmado (spec, 4.2).
         """
         disponiveis = self.fonte.listar()
         por_identidade = {f.identidade: f for f in disponiveis}
 
         if pedido.frase_reservada is not None:
             frase = por_identidade.get(pedido.frase_reservada)
-            return SemFrase.COLECAO_VAZIA if frase is None else (frase, ciclo)
+            if frase is not None:
+                return frase, ciclo
+            if self.repositorio.indices_confirmados(pedido.identidade):
+                return SemFrase.COLECAO_VAZIA
+            if pedido.frase_reservada in ciclo.reservadas:
+                ciclo = ciclo.liberar(pedido.frase_reservada)
 
         escolha = selecionar(ciclo, tuple(por_identidade), self.sorteio)
         if isinstance(escolha, SemFrase):

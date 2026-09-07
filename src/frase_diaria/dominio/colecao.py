@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 from frase_diaria.dominio.conteudo import Bloco
 
@@ -45,6 +46,19 @@ class ColecaoValida:
 
     itens: tuple[FrasePreservada, ...]
     diagnosticos: tuple[Diagnostico, ...] = ()
+
+
+@dataclass(frozen=True)
+class SnapshotPersistido:
+    """O que sobrevive de uma sincronização: identificador, instante e a coleção.
+
+    `identificador` correlaciona este snapshot em diagnósticos e no futuro
+    `/status` (ticket 15) — não participa de nenhuma decisão de negócio.
+    """
+
+    identificador: str
+    colecao: ColecaoValida
+    instante: datetime
 
 
 class SincronizacaoIncompleta(RuntimeError):

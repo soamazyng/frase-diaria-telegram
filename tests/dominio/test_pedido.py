@@ -128,6 +128,32 @@ def test_aguardar_tentativa_e_retomar_o_envio() -> None:
     assert retomado.estado is EstadoDoPedido.ENVIANDO
 
 
+def test_liberar_frase_excluida_volta_para_antes_da_reserva() -> None:
+    # A frase reservada sumiu da fonte antes de qualquer parte enviada: volta a
+    # um estado que aceita reservar outra, sem terminar o pedido (spec, 4.2).
+    reservado = _pedido().reservar("bloco-7")
+
+    liberado = reservado.liberar_frase_excluida("frase reservada não está mais na coleção")
+
+    assert liberado.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert liberado.frase_reservada is None
+    assert liberado.motivo_do_estado == "frase reservada não está mais na coleção"
+
+    trocado = liberado.reservar("bloco-8")
+    assert trocado.frase_reservada == "bloco-8"
+
+
+def test_liberar_frase_excluida_tambem_funciona_apos_iniciar_envio() -> None:
+    # Uma retomada pode encontrar o pedido já em ENVIANDO (sem nenhuma parte
+    # confirmada ainda) quando a frase reservada desaparece da fonte.
+    enviando = _pedido().reservar("bloco-7").iniciar_envio()
+
+    liberado = enviando.liberar_frase_excluida("frase reservada não está mais na coleção")
+
+    assert liberado.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert liberado.frase_reservada is None
+
+
 def test_entrega_ambigua_fica_incerta_e_terminal() -> None:
     incerto = (
         _pedido()

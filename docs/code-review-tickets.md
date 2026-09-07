@@ -29,8 +29,8 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 07 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 08 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
-| 10 | Em implementação (núcleo pronto e verificado contra a coleção real; falta wiring de 11/12) | Review executado no diretório de trabalho do ticket | Spec: OK no escopo entregue; Standards: 2 achados, ambos corrigidos |
-| 11 | Pendente | Não aplicável ainda | Pendente |
+| 10 | Concluído (wiring fechado pelo ticket 11) | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: 2 achados, ambos corrigidos |
+| 11 | Concluído | Review executado no diretório de trabalho do ticket (2 rodadas — a 1ª não viu os arquivos novos, untracked) | Spec: OK após correção; Standards: 4 achados, todos corrigidos |
 | 12 | Pendente | Não aplicável ainda | Pendente |
 | 13 | Pendente | Não aplicável ainda | Pendente |
 | 14 | Pendente | Não aplicável ainda | Pendente |
@@ -234,6 +234,31 @@ defeitos, ambos corrigidos antes do commit — ver
   Confirmado reproduzindo o loop de verdade (com timeout de shell) antes de
   corrigir.
 
+### Ticket 11
+
+A mesma situação do ticket 10 se repetiu: a primeira rodada não viu os arquivos
+novos (untracked); uma segunda, depois de `git add`, encontrou e confirmou quatro
+defeitos, todos corrigidos antes do commit — ver
+`docs/11-snapshot-duravel-cache-e-fallback.md`:
+
+- **Achado corrigido — concorrência/alta:** `processar_pedido.py::_processar`
+  mutava `pedido` para `frase_reservada=None` antes de tentar a transação de
+  troca de frase excluída. Um conflito de concorrência nessa transação faria
+  persistir esse `pedido` já liberado enquanto o ciclo persistido continuava com
+  a frase antiga reservada — órfã, sem nenhum pedido para liberá-la depois,
+  travando o ciclo para sempre. Corrigido separando o `pedido` que reflete o
+  persistido da tentativa em memória.
+- **Achado corrigido — corretude/média:** `persistencia/colecao.py::substituir`
+  não persistia `ColecaoValida.diagnosticos`, contrariando o próprio domínio
+  ("precisam ficar visíveis").
+- **Achado corrigido — concorrência/média:** o mesmo `substituir` gravava
+  incondicionalmente; duas sincronizações concorrentes terminando fora de ordem
+  deixariam a mais antiga sobrescrever a mais nova, ressuscitando momentaneamente
+  uma frase já excluída.
+- **Achado corrigido — robustez/média:** `infraestrutura/fonte_notion.py::_para_frase`
+  (o placeholder de texto plano) podia gerar uma parte vazia e derrubar
+  `listar()` para a coleção inteira por causa de uma única frase sem rich text.
+
 ## Spec
 
 Este eixo avalia somente requisitos ausentes ou parciais, scope creep e requisitos
@@ -295,13 +320,23 @@ Os dois achados de Standards acima também eram lacunas de Spec (AC03 e "execuç
 interrompida é reconciliável sem bloqueio permanente"); corrigidos antes deste registro,
 não há requisito ausente/parcial, scope creep ou implementado incorretamente pendente.
 
-### Ticket 10 — OK no escopo entregue
+### Ticket 10 — OK
 
 Os dois achados de Standards acima também eram lacunas de Spec (AC08 — leitura
 incompleta jamais pode escapar como algo diferente de `SincronizacaoIncompleta`);
-corrigidos antes deste registro. Fora do escopo desta sessão, e não reclassificado
-como falha: a credencial de produção (passo manual da usuária) e o wiring com
-persistência/renderização, explicitamente destinados aos tickets 11 e 12.
+corrigidos antes deste registro. O wiring de produção e a conservação de fato do
+snapshot anterior, que dependiam do ticket 11, já estão fechados; a renderização
+rica segue explicitamente destinada ao ticket 12.
+
+### Ticket 11 — OK após correção
+
+Os quatro achados de Standards acima também eram lacunas de Spec: o primeiro é
+AC03 (reserva órfã que trava o ciclo); o segundo e o terceiro são AC09 (cache
+precisa ficar visível e íntegro); o quarto quebraria a entrega de frases sem
+relação com o problema real (uma frase sem rich text). Todos corrigidos antes
+deste registro. Fora do escopo desta sessão, e não reclassificado como falha: a
+renderização rica e a divisão inteligente de mensagens, explicitamente
+destinadas ao ticket 12.
 
 ## Débitos deliberadamente encaminhados
 
@@ -310,24 +345,22 @@ Não contam como falha oculta do ticket que os originou:
 - identidade completa e máquina de estados: ticket 07;
 - intenção por parte, entrega incerta e retomada após confirmação: ticket 08;
 - lease, token de versão e concorrência entre workers: ticket 09;
-- substituição da fixture, mudanças/exclusões e snapshot: tickets 10 e 11;
 - retentativas, classificação de erro transitório e retomada automática: ticket 14.
 
 O débito de concorrência do ticket 06 foi resolvido pelo ticket 09 (versão do ciclo e
 lease do pedido). Do mesmo modo, o exercício AWS de 06 mostrou um pedido que precisou de
 retomada manual; o ticket 14 já registra a necessidade de o reconciliador alcançar esse
-estado.
+estado. A substituição da fixture, prevista para os tickets 10 e 11, foi concluída em
+ambos: a leitura/conversão no 10, a persistência/cache/wiring no 11.
 
 ## Resultado
 
 - Tickets com code-review histórico declarado: **02, 05 e 06**.
 - Tickets concluídos sem evidência histórica localizada de code-review: **03 e 04**.
 - Ticket administrativo sem implementação de código a certificar: **01**.
-- Tickets concluídos com review executado no diretório de trabalho: **07, 08 e 09** — 09
-  com achados corrigidos antes do commit.
-- Ticket em implementação, com o núcleo revisado, corrigido e verificado contra a
-  coleção real, mas não concluído (falta wiring de 11/12): **10**.
-- Tickets ainda pendentes: **11–22**.
+- Tickets concluídos com review executado no diretório de trabalho: **07, 08, 09, 10 e
+  11** — 09, 10 e 11 com achados corrigidos antes do commit.
+- Tickets ainda pendentes: **12–22**.
 
 Não há base para registrar “OK final pós-correção” em 02, 05 ou 06. O próximo marco
 confiável é corrigir ou aceitar explicitamente os achados vigentes e executar novo

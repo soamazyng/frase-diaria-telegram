@@ -391,6 +391,43 @@ def test_frase_reservada_sumiu_depois_de_entregar_parte_mantem_a_reserva() -> No
     assert resultado.frase_reservada == "bloco-sumida"
 
 
+def test_frase_reservada_sumiu_sem_nada_enviado_libera_e_seleciona_outra() -> None:
+    # Nada foi entregue ainda: trocar de frase não fere a invariante de entrega
+    # lógica única, e o pedido segue em vez de falhar à toa (ticket 11).
+    reservado = _pedido_pendente().reservar("bloco-sumida")
+    repositorio = RepositorioFalso(reservado)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
+    # A frase reservada não existe mais na fonte; só "bloco-2" está disponível.
+    outra = Frase(identidade="bloco-2", partes=("frase nova",))
+
+    resultado = _worker(
+        repositorio, CanalEspiao(), fonte=FonteFixa((outra,)), ciclos=ciclos
+    ).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.ENVIADO
+    assert resultado.frase_reservada == "bloco-2"
+    assert ciclos.ciclo.reservadas == frozenset()
+    assert ciclos.ciclo.foi_consumida("bloco-2")
+    assert not ciclos.ciclo.foi_consumida("bloco-sumida")
+
+
+def test_frase_reservada_sumiu_sem_alternativa_ainda_falha() -> None:
+    # Sem nenhuma frase elegível para trocar, o desfecho continua sendo falha
+    # — igual a uma coleção genuinamente vazia.
+    reservado = _pedido_pendente().reservar("bloco-sumida")
+    repositorio = RepositorioFalso(reservado)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=FonteFixa(()), ciclos=ciclos).executar(
+        "extra#42"
+    )
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.FALHOU
+    assert resultado.frase_reservada is None
+
+
 # --- ciclo atravessando as camadas -------------------------------------------
 
 COLECAO = tuple(Frase(identidade=f"f{n}", partes=(f"frase {n}",)) for n in range(1, 4))
@@ -639,6 +676,37 @@ def test_conflito_ao_reservar_propaga_como_reserva_pendente() -> None:
     assert not repositorio.pedido.estado.terminal
     assert repositorio.pedido.frase_reservada is None
     assert repositorio.tentativas[-1]["resultado"] == "aguardando"
+
+
+def test_conflito_ao_trocar_de_frase_nao_orfaniza_a_reserva_antiga_no_ciclo() -> None:
+    # Regressão (achado do code-review): se a transação que liberaria a frase
+    # antiga e reservaria a nova for recusada, gravar o pedido sem frase
+    # reservada mesmo assim deixaria o ciclo com uma reserva que nenhum pedido
+    # mais referencia — nada nunca mais a libera, travando o ciclo para sempre.
+    reservado = _pedido_pendente().reservar("bloco-sumida")
+    repositorio = RepositorioFalso(reservado)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
+    reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
+    outra = Frase(identidade="bloco-2", partes=("frase nova",))
+    worker = ProcessarPedido(
+        repositorio=repositorio,
+        fonte=FonteFixa((outra,)),
+        canal=CanalEspiao(),
+        sorteio=SorteioPrevisivel(),
+        relogio=RelogioFixo(),
+        ciclos=ciclos,
+        reserva=reserva,
+    )
+
+    with pytest.raises(ReservaPendente):
+        worker.executar("extra#42")
+
+    # O pedido persistido ainda referencia a frase antiga — a mesma que o
+    # ciclo persistido continua reservando — para que a próxima tentativa
+    # retome a troca em vez de deixar a reserva sem dono.
+    assert repositorio.pedido is not None
+    assert repositorio.pedido.frase_reservada == "bloco-sumida"
+    assert ciclos.ciclo.reservadas == frozenset({"bloco-sumida"})
 
 
 class CiclosComConflitoAoConsumir(CiclosEmMemoria):

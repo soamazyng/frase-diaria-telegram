@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
+from frase_diaria.dominio.colecao import ColecaoValida, SnapshotPersistido
 from frase_diaria.dominio.pedido import Pedido
 
 
@@ -32,3 +33,20 @@ class ConflitoDeConcorrencia(RuntimeError):
     escrita foi recusada porque o que estava em memória já não é o que está
     persistido, e sobrescrever corromperia o estado (spec, 4.9).
     """
+
+
+class FonteDaColecao(Protocol):
+    """Lê a coleção completa e validada da fonte externa (Notion)."""
+
+    def ler(self, pagina_id: str) -> ColecaoValida:
+        """Levanta `SincronizacaoIncompleta` numa leitura parcial ou com erro."""
+        ...
+
+
+class RepositorioDeColecao(Protocol):
+    """O snapshot ativo da coleção — o que sobra quando a fonte está fora do ar."""
+
+    def carregar_ativa(self) -> SnapshotPersistido | None: ...
+    def substituir(self, colecao: ColecaoValida, instante: datetime) -> None:
+        """Publica um novo snapshot ativo, inclusive um legitimamente vazio."""
+        ...

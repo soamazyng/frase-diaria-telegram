@@ -12,12 +12,16 @@ import boto3
 
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
+from frase_diaria.aplicacao.sincronizar_colecao import SincronizarColecao
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
-from frase_diaria.infraestrutura.colecao_fixture import ColecaoFixture
 from frase_diaria.infraestrutura.despachante import DespachanteLambda
+from frase_diaria.infraestrutura.fonte_notion import FonteDeFrasesNotion
 from frase_diaria.infraestrutura.relogio import RelogioDoSistema
 from frase_diaria.infraestrutura.sorteio import SorteioAleatorio
+from frase_diaria.notion.cliente import ClienteNotionHttp
+from frase_diaria.notion.leitura import LeitorDeColecao
 from frase_diaria.persistencia.ciclos import RepositorioDeCiclosDynamo
+from frase_diaria.persistencia.colecao import RepositorioDeColecaoDynamo
 from frase_diaria.persistencia.comandos import RepositorioDeComandosDynamo
 from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
 from frase_diaria.persistencia.reserva import ReservaTransacional
@@ -77,20 +81,30 @@ def montar_receber_comando() -> ReceberComando:
 def montar_processar_pedido() -> ProcessarPedido:
     """O worker.
 
-    A fonte de frases é a coleção embutida; o ticket 10 troca `ColecaoFixture`
-    pelo Notion sem que os casos de uso mudem.
+    A fonte de frases sincroniza com o Notion a cada chamada (spec, 4.2),
+    usando o snapshot persistido como cache quando a sincronização falha
+    (AC09). A conversão do conteúdo preservado para texto plano em
+    `FonteDeFrasesNotion` é um placeholder até a renderização rica do
+    ticket 12.
     """
     guardados = segredos()
+    relogio = RelogioDoSistema()
+    sincronizar = SincronizarColecao(
+        leitor=LeitorDeColecao(ClienteNotionHttp(token=guardados["notion-token"])),
+        repositorio=RepositorioDeColecaoDynamo(tabela=_tabela()),
+        pagina_id=guardados["notion-pagina-id"],
+        relogio=relogio,
+    )
     return ProcessarPedido(
         repositorio=RepositorioDePedidosDynamo(
             tabela=_tabela(),
             versao=os.environ["VERSAO_DA_APLICACAO"],
             bot_legado=guardados["telegram-bot-legado-id"],
         ),
-        fonte=ColecaoFixture(),
+        fonte=FonteDeFrasesNotion(sincronizar=sincronizar),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         sorteio=SorteioAleatorio(),
-        relogio=RelogioDoSistema(),
+        relogio=relogio,
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
         reserva=ReservaTransacional(
             tabela=_tabela(), bot_legado=guardados["telegram-bot-legado-id"]

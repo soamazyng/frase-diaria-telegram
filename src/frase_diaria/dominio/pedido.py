@@ -170,6 +170,22 @@ class Pedido:
             frase_reservada=self.frase_reservada,
         )
 
+    def liberar_frase_excluida(self, motivo: str) -> "Pedido":
+        """Sai de uma reserva cuja frase sumiu da fonte, sem terminar o pedido.
+
+        Só faz sentido antes de qualquer parte enviada: a frase é uma entrega
+        lógica única, então trocar no meio de uma entrega parcial quebraria
+        essa invariante (spec, 4.2/4.4) — quem chama garante isso checando o
+        histórico de partes confirmadas antes de usar esta transição.
+        Devolve a AGUARDANDO_TENTATIVA sem frase reservada, o mesmo estado de
+        onde `reservar` já sabe partir para reservar outra elegível.
+        """
+        return self._transicionar(
+            EstadoDoPedido.AGUARDANDO_TENTATIVA,
+            motivo,
+            frase_reservada=None,
+        )
+
     def concluir(self) -> "Pedido":
         if self.frase_reservada is None:
             raise ValueError("não é possível concluir pedido sem frase reservada")
