@@ -26,7 +26,7 @@ SAM ?= uvx --from aws-sam-cli sam
 # Alvo consumido pelo SAM (Metadata: BuildMethod: makefile) do recurso "Funcao".
 # O pip precisa baixar wheels de linux/arm64: instalar no macOS traria binários
 # de macOS e a função quebraria em tempo de execução, não no build.
-build-Funcao:
+build-Funcao build-Worker:
 	uv export --no-dev --no-emit-project --frozen --quiet -o "$(ARTIFACTS_DIR)/requirements.txt"
 	uv pip install \
 		--requirement "$(ARTIFACTS_DIR)/requirements.txt" \

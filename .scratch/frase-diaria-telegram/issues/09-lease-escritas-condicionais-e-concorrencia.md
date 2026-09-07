@@ -12,3 +12,12 @@
 - [ ] Uma execução interrompida é reconciliável sem deixar bloqueio permanente.
 - [ ] Lease expirado é registrado na observabilidade.
 - [ ] Testes de concorrência do repositório exercitam atomicidade, retomada e corrida entre dois executores.
+
+## Vindo do code-review do ticket 05
+
+`RepositorioDePedidosDynamo.salvar` já usa `attribute_exists(pk)`, o que impede
+inventar um pedido inexistente, mas **não** tem token de versão. Dois workers
+concorrentes podem ler o mesmo pedido em `PENDENTE`, sortear frases diferentes,
+ambos gravar e ambos enviar — frase duplicada e duas frases consumidas do ciclo.
+A invocação assíncrona da Lambda pode entregar o mesmo evento mais de uma vez,
+então o cenário não depende do reconciliador para acontecer.

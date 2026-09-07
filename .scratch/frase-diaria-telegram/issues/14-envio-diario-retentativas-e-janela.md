@@ -18,3 +18,12 @@
 - [ ] `/frase` usa o mesmo ciclo da diária e não a satisfaz nem a cancela (AC06).
 - [ ] Extra criado antes das 12:00 pode retentar até as 12:00; extra criado a partir das 12:00 tem uma única tentativa imediata e, falhando, encerra com diagnóstico, sem fila para o dia seguinte. *(Política decidida pela usuária: extras não entram em fila para o dia seguinte.)*
 - [ ] Atrasos acima de 15 minutos são registrados na observabilidade.
+
+## Vindo do code-review do ticket 05
+
+Hoje **qualquer** `ErroDoTelegram` — inclusive 429 e 5xx, que são transitórios —
+leva o pedido a `FALHOU` ou `PARCIAL`, ambos terminais. Um único 429 momentâneo
+encerra o pedido em definitivo, e tanto a retentativa da Lambda quanto o
+reconciliador saem pelo `if pedido.estado.terminal`. O AC13 exige distinguir
+transitório de permanente: o primeiro agenda nova tentativa do mesmo pedido, o
+segundo encerra com diagnóstico.

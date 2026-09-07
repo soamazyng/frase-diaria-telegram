@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from frase_diaria.aplicacao.portas import Relogio
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
 from frase_diaria.dominio.comando import Comando
+from frase_diaria.dominio.pedido import Origem, Pedido
 from frase_diaria.telegram.atualizacao import Atualizacao, interpretar
 
 _log = logging.getLogger(__name__)
@@ -34,7 +35,17 @@ class RepositorioDeComandos(Protocol):
 
 
 class CanalDeTelegram(Protocol):
-    def enviar_texto(self, chat_id: int, texto: str) -> None: ...
+    def enviar_texto(self, chat_id: int, texto: str) -> int: ...
+
+
+class RepositorioDePedidos(Protocol):
+    def criar_se_ausente(self, pedido: Pedido, instante: datetime) -> bool: ...
+
+
+class Despachante(Protocol):
+    def acordar(self, identidade: str) -> None:
+        """Tenta pôr o worker para trabalhar agora."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,8 @@ class ReceberComando:
     repositorio: RepositorioDeComandos
     canal: CanalDeTelegram
     relogio: Relogio
+    pedidos: RepositorioDePedidos
+    despachante: Despachante
 
     def executar(self, segredo: str | None, corpo: dict[str, Any]) -> Desfecho:
         atualizacao = interpretar(corpo)
@@ -72,6 +85,17 @@ class ReceberComando:
             _log.exception("falha ao registrar comando; pedindo reentrega")
             return Desfecho.NAO_PERSISTIDO
 
+        if atualizacao.comando is Comando.FRASE:
+            # Antes de decidir sobre a repetição: se a primeira entrega registrou
+            # o comando e morreu antes de criar o pedido, é a reentrega que
+            # conserta. A criação é idempotente, então repetir é barato.
+            try:
+                self._pedir_frase(atualizacao.update_id, atualizacao.conversa.chat_id)
+            except Exception:
+                _log.exception("falha ao criar pedido; pedindo reentrega")
+                return Desfecho.NAO_PERSISTIDO
+            return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
+
         if not novo:
             return Desfecho.JA_CONHECIDO
 
@@ -79,3 +103,24 @@ class ReceberComando:
             self.canal.enviar_texto(atualizacao.conversa.chat_id, AJUDA)
 
         return Desfecho.ACEITO
+
+    def _pedir_frase(self, update_id: int, chat_id: int) -> None:
+        """Cria o pedido extra e tenta acordar o worker.
+
+        A frase não é enviada aqui: quem entrega é o worker, lendo o pedido da
+        persistência. Responder no webhook exigiria trabalho em segundo plano
+        depois da resposta HTTP, que a spec descarta.
+        """
+        pedido = Pedido(
+            identidade=Pedido.identidade_de_extra(update_id),
+            origem=Origem.EXTRA,
+            chat_id=chat_id,
+        )
+        if not self.pedidos.criar_se_ausente(pedido, self.relogio.agora()):
+            return
+        try:
+            self.despachante.acordar(pedido.identidade)
+        except Exception:
+            # O pedido está persistido; o reconciliador o alcançará. Falhar aqui
+            # faria o Telegram reentregar um comando já registrado.
+            _log.exception("falha ao acordar o worker para %s", pedido.identidade)

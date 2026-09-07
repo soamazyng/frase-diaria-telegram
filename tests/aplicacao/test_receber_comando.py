@@ -44,8 +44,9 @@ class CanalEspiao:
     def __init__(self) -> None:
         self.enviados: list[tuple[int, str]] = []
 
-    def enviar_texto(self, chat_id: int, texto: str) -> None:
+    def enviar_texto(self, chat_id: int, texto: str) -> int:
         self.enviados.append((chat_id, texto))
+        return 900 + len(self.enviados)
 
 
 def _mensagem(
@@ -66,6 +67,8 @@ def _caso(repositorio: Any | None = None, canal: Any | None = None) -> ReceberCo
         repositorio=repositorio if repositorio is not None else RepositorioEmMemoria(),
         canal=canal if canal is not None else CanalEspiao(),
         relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=DespachanteEspiao(),
     )
 
 
@@ -161,3 +164,129 @@ def test_falha_ao_persistir_nao_responde_e_pede_reentrega() -> None:
     # Nada foi enviado: responder sem ter registrado deixaria o Telegram
     # reentregar um comando que a usuária já viu respondido.
     assert canal.enviados == []
+
+
+# --- /frase cria pedido e acorda o worker ------------------------------------
+
+
+class PedidosEspiao:
+    def __init__(self, ja_existe: bool = False) -> None:
+        self.criados: list[Any] = []
+        self.ja_existe = ja_existe
+
+    def criar_se_ausente(self, pedido: Any, instante: Any) -> bool:
+        self.criados.append(pedido)
+        return not self.ja_existe
+
+
+class DespachanteEspiao:
+    def __init__(self, falhar: bool = False) -> None:
+        self.acordados: list[str] = []
+        self.falhar = falhar
+
+    def acordar(self, identidade: str) -> None:
+        if self.falhar:
+            raise RuntimeError("Lambda indisponível")
+        self.acordados.append(identidade)
+
+
+def _caso_com_pedidos(pedidos: Any, despachante: Any, canal: Any = None) -> ReceberComando:
+    return ReceberComando(
+        politica=POLITICA,
+        repositorio=RepositorioEmMemoria(),
+        canal=canal if canal is not None else CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=pedidos,
+        despachante=despachante,
+    )
+
+
+def test_frase_cria_pedido_extra_e_acorda_o_worker() -> None:
+    pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
+
+    desfecho = _caso_com_pedidos(pedidos, despachante).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    assert desfecho is Desfecho.ACEITO
+    assert pedidos.criados[0].identidade == "extra#77"
+    assert pedidos.criados[0].chat_id == CHAT
+    assert despachante.acordados == ["extra#77"]
+
+
+def test_frase_nao_responde_no_webhook() -> None:
+    # A frase chega pelo worker; responder aqui duplicaria a mensagem.
+    canal = CanalEspiao()
+
+    _caso_com_pedidos(PedidosEspiao(), DespachanteEspiao(), canal).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    assert canal.enviados == []
+
+
+def test_frase_ja_conhecida_nao_acorda_o_worker_de_novo() -> None:
+    pedidos, despachante = PedidosEspiao(ja_existe=True), DespachanteEspiao()
+
+    _caso_com_pedidos(pedidos, despachante).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    assert despachante.acordados == []
+
+
+def test_falha_ao_acordar_o_worker_nao_derruba_o_webhook() -> None:
+    # O pedido está persistido; o reconciliador o encontrará. Devolver erro faria
+    # o Telegram reentregar um comando que já foi registrado.
+    pedidos = PedidosEspiao()
+
+    desfecho = _caso_com_pedidos(pedidos, DespachanteEspiao(falhar=True)).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    assert desfecho is Desfecho.ACEITO
+    assert pedidos.criados != []
+
+
+class PedidosQueFalham:
+    def criar_se_ausente(self, pedido: Any, instante: Any) -> bool:
+        raise RuntimeError("DynamoDB indisponível")
+
+
+def test_falha_ao_criar_o_pedido_pede_reentrega() -> None:
+    """Sem isto, um `/frase` se perde para sempre.
+
+    A exceção subiria pelo FastAPI como 500, o Telegram reentregaria, o registro
+    do comando já existiria — devolvendo JA_CONHECIDO e 200 — e o pedido nunca
+    seria criado. Comando registrado, frase nunca entregue, sem nova chance.
+    """
+    desfecho = _caso_com_pedidos(PedidosQueFalham(), DespachanteEspiao()).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    assert desfecho is Desfecho.NAO_PERSISTIDO
+
+
+def test_reentrega_de_frase_ja_registrada_ainda_garante_o_pedido() -> None:
+    """A criação do pedido é idempotente, então repetir é barato e seguro.
+
+    Se a primeira entrega registrou o comando mas morreu antes de criar o pedido,
+    é a reentrega que conserta — e ela só conserta se este caminho tentar de novo.
+    """
+    repositorio = RepositorioEmMemoria()
+    pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
+    caso = ReceberComando(
+        politica=POLITICA,
+        repositorio=repositorio,
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=pedidos,
+        despachante=despachante,
+    )
+    corpo = _mensagem("/frase", update_id=77)
+
+    caso.executar(segredo=SEGREDO, corpo=corpo)
+    segundo = caso.executar(segredo=SEGREDO, corpo=corpo)
+
+    assert segundo is Desfecho.JA_CONHECIDO
+    assert len(pedidos.criados) == 2

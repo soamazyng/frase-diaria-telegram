@@ -4,11 +4,11 @@
 
 **Blocked by:** 04 — Webhook autenticado, /start e ajuda.
 
-**Status:** ready-for-agent
+**Status:** concluído em 2026-09-07 — ver `docs/05-entrega-de-frase.md`
 
-- [ ] `/frase` cria um pedido extra persistido e tenta acordar o worker; a resposta HTTP não depende de trabalho em segundo plano.
-- [ ] O worker processa pedidos lidos da persistência, não do corpo da requisição.
-- [ ] Uma frase é tratada como entrega lógica e suas partes são salvas individualmente, com a confirmação de cada uma.
-- [ ] Entrega confirmada exige sucesso do Telegram e persistência da confirmação.
-- [ ] A frase entregue fica registrada no histórico com o conteúdo efetivamente enviado.
-- [ ] Falha na chamada ao Telegram registra tentativa com erro sanitizado, sem token nem URL assinada nos logs.
+- [x] `/frase` cria um pedido extra persistido e tenta acordar o worker; a resposta HTTP não depende de trabalho em segundo plano.
+- [x] O worker processa pedidos lidos da persistência, não do corpo da requisição.
+- [x] Uma frase é tratada como entrega lógica e suas partes são salvas individualmente, com a confirmação de cada uma.
+- [x] Entrega confirmada exige sucesso do Telegram e persistência da confirmação.
+- [x] A frase entregue fica registrada no histórico com o conteúdo efetivamente enviado.
+- [x] Falha na chamada ao Telegram registra tentativa com erro sanitizado, sem token nem URL assinada nos logs.

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  Aplicação do frase-diaria-telegram: função Lambda, entrada HTTP e logs.
+  Aplicação do frase-diaria-telegram: entrada HTTP, worker de entrega e logs.
   Republicar esta stack não toca na stack de dados, que guarda o histórico.
 
 Parameters:
@@ -28,6 +28,12 @@ Globals:
     Timeout: 30
     Architectures:
       - arm64
+    Environment:
+      Variables:
+        VERSAO_DA_APLICACAO: !Ref Versao
+        TABELA_ESTADO:
+          Fn::ImportValue: !Sub "${Prefixo}-TabelaNome"
+        FUNCAO_WORKER: !Sub "${Prefixo}-worker"
 
 Resources:
   # Stage $default não prefixa o caminho: GET /health chega ao FastAPI como
@@ -36,7 +42,6 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: $default
-      # Sem docs públicas e sem CORS: o bot é de usuária única.
       DefinitionBody:
         openapi: "3.0.1"
         info:
@@ -64,6 +69,8 @@ Resources:
                 payloadFormatVersion: "2.0"
                 uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Funcao.Arn}/invocations"
 
+  # A fronteira HTTP: valida, registra o pedido e acorda o worker. Nunca entrega
+  # a frase — isso exigiria trabalho depois de responder ao Telegram.
   Funcao:
     Type: AWS::Serverless::Function
     Metadata:
@@ -72,17 +79,11 @@ Resources:
       FunctionName: !Sub "${Prefixo}-http"
       CodeUri: ..
       Handler: frase_diaria.infraestrutura.http.lambda_handler.handler
-      Environment:
-        Variables:
-          VERSAO_DA_APLICACAO: !Ref Versao
-          TABELA_ESTADO:
-            Fn::ImportValue: !Sub "${Prefixo}-TabelaNome"
       Policies:
-        # Permissões específicas por função: só a tabela deste projeto, só as
-        # ações que a aplicação usa. Nada de acesso amplo a DynamoDB.
         - Version: "2012-10-17"
           Statement:
-            - Effect: Allow
+            - &acessoATabela
+              Effect: Allow
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
@@ -97,20 +98,24 @@ Resources:
                   - "${Arn}/index/*"
                   - Arn:
                       Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-            # Só os parâmetros deste projeto, e só leitura.
-            - Effect: Allow
+            - &leituraDosSegredos
+              Effect: Allow
               Action:
                 - ssm:GetParametersByPath
                 - ssm:GetParameter
                 - ssm:GetParameters
               Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/*"
-            # SecureString usa a chave gerenciada do SSM; sem isto a decifragem falha.
-            - Effect: Allow
+            - &decifrarSegredos
+              Effect: Allow
               Action: kms:Decrypt
               Resource: "*"
               Condition:
                 StringEquals:
                   kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+            # Acordar o worker: só esta função, nada além dela.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-worker"
       Events:
         Health:
           Type: HttpApi
@@ -125,13 +130,39 @@ Resources:
             Path: /telegram/webhook
             Method: POST
 
-  # Declarado explicitamente para controlar a retenção. Sem isso a Lambda cria
-  # o grupo com retenção infinita, que cresce e passa a custar.
+  # O worker: lê o pedido da persistência e entrega. Sem gatilho HTTP — só
+  # invocação assíncrona e, a partir do ticket 14, o agendador.
+  Worker:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-worker"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.worker_handler.handler
+      # Mais folgado que a fronteira HTTP: aqui há várias chamadas ao Telegram.
+      Timeout: 60
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - *acessoATabela
+            - *leituraDosSegredos
+            - *decifrarSegredos
+
+  # Declarados explicitamente para controlar a retenção. Sem isso a Lambda cria
+  # os grupos com retenção infinita, que crescem e passam a custar.
   LogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Prefixo}-http"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+  LogGroupWorker:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-worker"
       RetentionInDays: !Ref RetencaoDeLogsEmDias
 
 Outputs:

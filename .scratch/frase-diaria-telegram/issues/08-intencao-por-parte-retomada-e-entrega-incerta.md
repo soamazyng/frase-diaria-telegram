@@ -15,3 +15,16 @@
 - [ ] O risco aceito está documentado no código ou no repositório: esta política troca a possibilidade de uma entrega perdida pela garantia de não duplicar.
 
 > **Política decidida pela usuária:** tratamento conservador da entrega incerta — suspender o reenvio automático, aceitando explicitamente o risco de uma mensagem perdida em falha externa ambígua. A spec não promete entrega exatamente uma vez sob falha ambígua (seção 6).
+
+## Vindo do code-review do ticket 05
+
+Hoje `ProcessarPedido` envia a parte e **só depois** persiste a confirmação. Se
+essa escrita falhar, ou o processo morrer entre as duas, a retomada reenvia a
+mesma parte — mensagem duplicada para a usuária. É exatamente o que este ticket
+resolve: registrar a intenção antes do envio e marcar *incerto* no resultado
+ambíguo.
+
+Ver também `MESSAGE_ID_DESCONHECIDO` em `telegram/canal.py`: quando a Bot API
+responde `ok: true` sem identificador, hoje a parte conta como entregue com
+identificador zero. Esse é um caso legítimo de **entrega incerta** e deveria
+receber o tratamento deste ticket.
