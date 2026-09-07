@@ -29,7 +29,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 07 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 08 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
-| 10 | Pendente | Não aplicável ainda | Pendente |
+| 10 | Em implementação (núcleo pronto; falta credencial manual e wiring de 11/12) | Review executado no diretório de trabalho do ticket | Spec: OK no escopo entregue; Standards: 2 achados, ambos corrigidos |
 | 11 | Pendente | Não aplicável ainda | Pendente |
 | 12 | Pendente | Não aplicável ainda | Pendente |
 | 13 | Pendente | Não aplicável ainda | Pendente |
@@ -218,6 +218,22 @@ Achados de uma revisão posterior, já com o ticket commitado, sobre o diff acum
   para `ConflitoDeConcorrencia` se repete em cinco pontos com variações genuínas o
   bastante para que unificá-las agora arriscasse introduzir nova assimetria.
 
+### Ticket 10
+
+A primeira rodada de review não viu os arquivos novos (eram *untracked*, fora do
+diff); uma segunda rodada, depois de `git add`, encontrou e confirmou dois
+defeitos, ambos corrigidos antes do commit — ver
+`docs/10-sincronizacao-com-notion.md`:
+
+- **Achado corrigido — corretude/alta:** `notion/leitura.py::_ler_discussoes` não
+  capturava `ErroDoNotion`; um erro do Notion ao buscar discussões que não fosse
+  403 escapava cru em vez de virar `SincronizacaoIncompleta`, quebrando o contrato
+  documentado no resto do módulo.
+- **Achado corrigido — corretude/alta:** `notion/cliente.py::_paginar` entrava em
+  loop infinito se a API respondesse `has_more: true` sem `next_cursor`.
+  Confirmado reproduzindo o loop de verdade (com timeout de shell) antes de
+  corrigir.
+
 ## Spec
 
 Este eixo avalia somente requisitos ausentes ou parciais, scope creep e requisitos
@@ -279,6 +295,14 @@ Os dois achados de Standards acima também eram lacunas de Spec (AC03 e "execuç
 interrompida é reconciliável sem bloqueio permanente"); corrigidos antes deste registro,
 não há requisito ausente/parcial, scope creep ou implementado incorretamente pendente.
 
+### Ticket 10 — OK no escopo entregue
+
+Os dois achados de Standards acima também eram lacunas de Spec (AC08 — leitura
+incompleta jamais pode escapar como algo diferente de `SincronizacaoIncompleta`);
+corrigidos antes deste registro. Fora do escopo desta sessão, e não reclassificado
+como falha: a credencial de produção (passo manual da usuária) e o wiring com
+persistência/renderização, explicitamente destinados aos tickets 11 e 12.
+
 ## Débitos deliberadamente encaminhados
 
 Não contam como falha oculta do ticket que os originou:
@@ -301,7 +325,9 @@ estado.
 - Ticket administrativo sem implementação de código a certificar: **01**.
 - Tickets concluídos com review executado no diretório de trabalho: **07, 08 e 09** — 09
   com achados corrigidos antes do commit.
-- Tickets ainda pendentes: **10–22**.
+- Ticket em implementação, com o núcleo revisado e corrigido, mas não concluído (falta
+  credencial manual e wiring de 11/12): **10**.
+- Tickets ainda pendentes: **11–22**.
 
 Não há base para registrar “OK final pós-correção” em 02, 05 ou 06. O próximo marco
 confiável é corrigir ou aceitar explicitamente os achados vigentes e executar novo
