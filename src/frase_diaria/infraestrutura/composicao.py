@@ -17,8 +17,10 @@ from frase_diaria.infraestrutura.colecao_fixture import ColecaoFixture
 from frase_diaria.infraestrutura.despachante import DespachanteLambda
 from frase_diaria.infraestrutura.relogio import RelogioDoSistema
 from frase_diaria.infraestrutura.sorteio import SorteioAleatorio
+from frase_diaria.persistencia.ciclos import RepositorioDeCiclosDynamo
 from frase_diaria.persistencia.comandos import RepositorioDeComandosDynamo
 from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
+from frase_diaria.persistencia.reserva import ReservaTransacional
 from frase_diaria.telegram.canal import TelegramHttp
 
 PREFIXO_DOS_PARAMETROS = "/frase-diaria/"
@@ -75,4 +77,6 @@ def montar_processar_pedido() -> ProcessarPedido:
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         sorteio=SorteioAleatorio(),
         relogio=RelogioDoSistema(),
+        ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
+        reserva=ReservaTransacional(tabela=_tabela()),
     )

@@ -21,3 +21,18 @@ concorrentes podem ler o mesmo pedido em `PENDENTE`, sortear frases diferentes,
 ambos gravar e ambos enviar — frase duplicada e duas frases consumidas do ciclo.
 A invocação assíncrona da Lambda pode entregar o mesmo evento mais de uma vez,
 então o cenário não depende do reconciliador para acontecer.
+
+## Vindo do code-review do ticket 06
+
+`RepositorioDeCiclosDynamo.salvar` grava o item inteiro com `put_item`
+incondicional. Dois workers que carregarem o mesmo ciclo, sortearem frases
+diferentes e gravarem em sequência perdem a reserva de um dos dois — e as duas
+frases podem sair no mesmo ciclo.
+
+A reserva já é transacional (`persistencia/reserva.py`: ciclo e pedido mudam
+juntos), o que elimina a reserva órfã, mas **não** protege contra sobrescrita.
+Falta o token de versão no item do ciclo, com escrita condicional sobre ele.
+
+Paliativo em vigor: `ProcessarPedido._consumir_no_ciclo` detecta que o ciclo
+perdeu a reserva de uma frase já entregue, registra o desvio e consome mesmo
+assim, em vez de deixá-la elegível de novo.

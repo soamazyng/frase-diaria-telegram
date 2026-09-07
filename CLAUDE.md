@@ -9,7 +9,7 @@ originou. Este arquivo diz o que o projeto é; `rules.md` diz como trabalhar nel
 
 ## Estado do repositório
 
-Tickets 01 a 05 concluídos: `/frase` entrega uma frase de verdade no Telegram, vinda da coleção embutida em `infraestrutura/colecao_fixture.py`. Existe esqueleto Python com testes e análise estática passando, e `GET /health` publicado na AWS em duas stacks (`frase-diaria-dados` e `frase-diaria-app`). Ainda sem Notion (ticket 10), sem seleção sem repetição (06), sem envio diário (14) e sem `/status` (15) — que hoje é reconhecido mas não responde.
+Tickets 01 a 06 concluídos: `/frase` entrega uma frase de verdade no Telegram, vinda da coleção embutida em `infraestrutura/colecao_fixture.py`, percorrendo a coleção sem repetir dentro do ciclo. Existe esqueleto Python com testes e análise estática passando, e `GET /health` publicado na AWS em duas stacks (`frase-diaria-dados` e `frase-diaria-app`). Ainda sem Notion (ticket 10), sem envio diário (14) e sem `/status` (15) — que hoje é reconhecido mas não responde.
 
 **A tabela `frase-diaria-estado` é `Retain`.** A stack de aplicação só a importa; republicar a aplicação nunca alcança os dados. Isso foi exercitado, não presumido.
 

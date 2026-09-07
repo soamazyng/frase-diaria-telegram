@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 
-from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
+from frase_diaria.aplicacao.processar_pedido import ProcessarPedido, ReservaPendente
+from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.telegram.canal import ErroDoTelegram
@@ -82,13 +83,44 @@ def _pedido_pendente() -> Pedido:
     return Pedido(identidade="extra#42", origem=Origem.EXTRA, chat_id=CHAT)
 
 
-def _worker(repositorio: Any, canal: Any, fonte: Any | None = None) -> ProcessarPedido:
+class ReservaEmMemoria:
+    """Faz o papel da transação: grava ciclo e pedido juntos."""
+
+    def __init__(self, ciclos: Any, repositorio: Any) -> None:
+        self.ciclos = ciclos
+        self.repositorio = repositorio
+
+    def efetivar(self, pedido: Any, ciclo: Any) -> None:
+        self.ciclos.salvar(ciclo)
+        self.repositorio.salvar(pedido)
+
+
+class CiclosEmMemoria:
+    def __init__(self, ciclo: Ciclo | None = None) -> None:
+        self.ciclo = ciclo if ciclo is not None else Ciclo.primeiro()
+
+    def carregar(self) -> Ciclo:
+        return self.ciclo
+
+    def salvar(self, ciclo: Ciclo) -> None:
+        self.ciclo = ciclo
+
+
+def _worker(
+    repositorio: Any,
+    canal: Any,
+    fonte: Any | None = None,
+    ciclos: Any | None = None,
+) -> ProcessarPedido:
+    ciclos = ciclos if ciclos is not None else CiclosEmMemoria()
     return ProcessarPedido(
         repositorio=repositorio,
         fonte=fonte if fonte is not None else FonteFixa(),
         canal=canal,
         sorteio=SorteioPrevisivel(),
         relogio=RelogioFixo(),
+        ciclos=ciclos,
+        reserva=ReservaEmMemoria(ciclos, repositorio),
     )
 
 
@@ -193,8 +225,9 @@ def test_retomada_envia_apenas_as_partes_que_faltam() -> None:
     repositorio = RepositorioFalso(em_andamento)
     repositorio.partes.append({"indice": 0, "texto": "parte um", "message_id": 901})
     canal = CanalEspiao()
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
 
-    _worker(repositorio, canal).executar("extra#42")
+    _worker(repositorio, canal, ciclos=ciclos).executar("extra#42")
 
     assert canal.enviados == ["parte dois"]
 
@@ -219,8 +252,11 @@ def test_a_frase_reservada_e_reaproveitada_em_vez_de_sortear_outra() -> None:
     outra = Frase(identidade="bloco-2", partes=("da reserva",))
     repositorio = RepositorioFalso(reservado)
     canal = CanalEspiao()
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-2"))
 
-    _worker(repositorio, canal, fonte=FonteFixa((UMA_FRASE, outra))).executar("extra#42")
+    _worker(repositorio, canal, fonte=FonteFixa((UMA_FRASE, outra)), ciclos=ciclos).executar(
+        "extra#42"
+    )
 
     assert canal.enviados == ["da reserva"]
 
@@ -270,9 +306,161 @@ def test_frase_reservada_sumiu_depois_de_entregar_parte_mantem_a_reserva() -> No
     em_andamento = _pedido_pendente().reservar("bloco-sumida")
     repositorio = RepositorioFalso(em_andamento)
     repositorio.partes.append({"indice": 0, "texto": "já foi", "message_id": 901})
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
 
-    resultado = _worker(repositorio, CanalEspiao(), fonte=FonteFixa(())).executar("extra#42")
+    resultado = _worker(repositorio, CanalEspiao(), fonte=FonteFixa(()), ciclos=ciclos).executar(
+        "extra#42"
+    )
 
     assert resultado is not None
     assert resultado.estado is EstadoDoPedido.PARCIAL
     assert resultado.frase_reservada == "bloco-sumida"
+
+
+# --- ciclo atravessando as camadas -------------------------------------------
+
+COLECAO = tuple(Frase(identidade=f"f{n}", partes=(f"frase {n}",)) for n in range(1, 4))
+
+
+class SorteioDoUltimo:
+    def escolher(self, candidatos: Any) -> Any:
+        return candidatos[-1]
+
+
+def _entregar_uma(ciclos: Any, update_id: int, sorteio: Any = None) -> str:
+    """Roda um pedido inteiro e devolve o texto entregue."""
+    repositorio = RepositorioFalso(
+        Pedido(identidade=f"extra#{update_id}", origem=Origem.EXTRA, chat_id=CHAT)
+    )
+    canal = CanalEspiao()
+    worker = ProcessarPedido(
+        repositorio=repositorio,
+        fonte=FonteFixa(COLECAO),
+        canal=canal,
+        sorteio=sorteio if sorteio is not None else SorteioPrevisivel(),
+        relogio=RelogioFixo(),
+        ciclos=ciclos,
+        reserva=ReservaEmMemoria(ciclos, repositorio),
+    )
+    worker.executar(f"extra#{update_id}")
+    return canal.enviados[0]
+
+
+def test_tres_pedidos_seguidos_entregam_as_tres_frases_sem_repetir() -> None:
+    """AC04, ponta a ponta: com N frases, N entregas têm identidades distintas."""
+    ciclos = CiclosEmMemoria()
+
+    entregues = [_entregar_uma(ciclos, n) for n in range(1, 4)]
+
+    assert sorted(entregues) == ["frase 1", "frase 2", "frase 3"]
+
+
+def test_a_quarta_entrega_abre_ciclo_novo_sem_repetir_a_ultima() -> None:
+    """AC05: a primeira do ciclo novo difere da última do anterior."""
+    ciclos = CiclosEmMemoria()
+    for n in range(1, 4):
+        _entregar_uma(ciclos, n, sorteio=SorteioDoUltimo())
+    ultima = ciclos.ciclo.ultima_entregue
+    assert ultima is not None
+
+    quarta = _entregar_uma(ciclos, 4, sorteio=SorteioDoUltimo())
+
+    assert ciclos.ciclo.numero == 2
+    assert quarta != f"frase {ultima[1:]}"
+
+
+def test_o_consumo_so_e_marcado_apos_a_entrega_confirmada() -> None:
+    ciclos = CiclosEmMemoria()
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    _worker(repositorio, CanalEspiao(falhar_na_parte=0), ciclos=ciclos).executar("extra#42")
+
+    # Nada foi entregue: a frase volta às elegíveis, sem consumo.
+    assert ciclos.ciclo.consumidas == frozenset()
+    assert ciclos.ciclo.reservadas == frozenset()
+
+
+def test_entrega_parcial_consome_a_frase_com_ressalva() -> None:
+    ciclos = CiclosEmMemoria()
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    _worker(repositorio, CanalEspiao(falhar_na_parte=1), ciclos=ciclos).executar("extra#42")
+
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+
+
+def test_entrega_completa_consome_sem_ressalva() -> None:
+    ciclos = CiclosEmMemoria()
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    _worker(repositorio, CanalEspiao(), ciclos=ciclos).executar("extra#42")
+
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset()
+
+
+# --- correções vindas do code-review -----------------------------------------
+
+
+def test_todas_reservadas_propaga_em_vez_de_encerrar() -> None:
+    """Condição transitória não pode virar estado terminal.
+
+    Se a diária encontrasse a última frase reservada por um `/frase` em curso e
+    encerrasse, nem a retomada nem a janela até 12:00 a reabririam.
+    """
+    ciclo = Ciclo.primeiro()
+    for frase in ("f1", "f2"):
+        ciclo = ciclo.reservar(frase).consumir(frase)
+    ciclo = ciclo.reservar("f3")
+    ciclos = CiclosEmMemoria(ciclo)
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with pytest.raises(ReservaPendente):
+        _worker(repositorio, CanalEspiao(), fonte=FonteFixa(COLECAO), ciclos=ciclos).executar(
+            "extra#42"
+        )
+
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+    assert repositorio.tentativas[-1]["resultado"] == "aguardando"
+
+
+def test_frase_entregue_e_consumida_mesmo_se_o_ciclo_perdeu_a_reserva() -> None:
+    """Pular o consumo em silêncio deixaria a frase elegível de novo no ciclo.
+
+    A mensagem foi para a usuária; o ciclo precisa refletir isso, ainda que uma
+    gravação concorrente tenha apagado a reserva.
+    """
+    reservado = _pedido_pendente().reservar("bloco-1")
+    repositorio = RepositorioFalso(reservado)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro())  # ciclo sem a reserva
+
+    _worker(repositorio, CanalEspiao(), ciclos=ciclos).executar("extra#42")
+
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+
+
+def test_o_pedido_e_gravado_antes_do_ciclo_ao_encerrar() -> None:
+    # A ordem importa: um crash entre as duas gravações deve deixar o ciclo
+    # desatualizado (recuperável), nunca o pedido reivindicando uma reserva que
+    # o ciclo já soltou.
+    ordem: list[str] = []
+
+    class RepositorioQueAnota(RepositorioFalso):
+        def salvar(self, pedido: Any) -> None:
+            ordem.append("pedido")
+            super().salvar(pedido)
+
+    class CiclosQueAnotam(CiclosEmMemoria):
+        def salvar(self, ciclo: Any) -> None:
+            ordem.append("ciclo")
+            super().salvar(ciclo)
+
+    reservado = _pedido_pendente().reservar("bloco-1")
+    repositorio = RepositorioQueAnota(reservado)
+    ciclos = CiclosQueAnotam(Ciclo.primeiro().reservar("bloco-1"))
+
+    _worker(repositorio, CanalEspiao(falhar_na_parte=0), ciclos=ciclos).executar("extra#42")
+
+    assert ordem == ["pedido", "ciclo"]
