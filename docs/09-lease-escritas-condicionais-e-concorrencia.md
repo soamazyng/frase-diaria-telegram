@@ -38,6 +38,34 @@ O `/code-review` (eixos Standards e Spec) encontrou que, depois de `reserva.efet
 
 O mesmo review apontou que `_retentar_no_ciclo` desistia em silêncio depois de poucas tentativas; a margem foi ampliada para 20, documentado na seção acima.
 
+## Correção posterior ao commit (achada por um code-review de escopo mais amplo)
+
+Uma revisão seguinte, rodada sobre o diff acumulado desde `main` (não só o diff do
+ticket em andamento naquele momento), encontrou dois problemas neste ticket já
+commitado:
+
+- **Corrigido:** `assumir_lease` usava `lease_dono < :seq` (estrito). Um retry
+  automático do SDK sobre a mesma tentativa — depois que a primeira chamada já
+  tinha sucesso no servidor, mas a confirmação se perdeu num blip de rede —
+  encontrava `lease_dono` já igual a `:seq`, não menor, e era recusado como se
+  fosse de outro executor. Corrigido para `lease_dono <= :seq`, tornando a
+  reivindicação idempotente para o próprio dono, como já era o caso em
+  `salvar`, `confirmar_parte` e `ReservaTransacional.efetivar`. Regressão:
+  `test_reassumir_o_proprio_lease_e_idempotente` (falha sem a correção,
+  confirmado revertendo e restaurando).
+- **Corrigido:** `_retentar_no_ciclo` relia sem nenhuma dispersão entre
+  tentativas; sob contenção real, vários pedidos perdedores relêem e colidem
+  juntos de novo. Adicionado um jitter pequeno (até 20 ms) entre retentativas.
+- **Aceito e não corrigido:** a tradução de exceção do boto3
+  (`ConditionalCheckFailedException`/`TransactionCanceledException`) para
+  `ConflitoDeConcorrencia` se repete em cinco pontos (`pedidos.py` ×3,
+  `ciclos.py`, `reserva.py`), com pequenas variações de exceção capturada e
+  mensagem. É duplicação real, mas as cinco variantes divergem o suficiente
+  (uma delas só traduz condicionalmente; outra precisa inspecionar
+  `CancellationReasons`) para que uma abstração única valha o risco de
+  introduzir uma nova assimetria, no orçamento desta sessão. Fica registrado
+  como débito de limpeza, não de correção.
+
 ## Verificação
 
 O gate do repositório foi executado e passou:

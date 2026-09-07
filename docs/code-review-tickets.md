@@ -205,6 +205,19 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
   barata, sem chamada ao Telegram, então o custo de mais tentativas é desprezível frente ao
   risco de esgotá-las.
 
+Achados de uma revisão posterior, já com o ticket commitado, sobre o diff acumulado desde
+`main` (não só o diff deste ticket) — ver `docs/09-lease-escritas-condicionais-e-concorrencia.md`:
+
+- **Achado corrigido — concorrência/alta:** `pedidos.py::assumir_lease` usava
+  `lease_dono < :seq` (estrito); um retry automático do SDK reafirmando a própria
+  tentativa era recusado como se fosse de outro executor. Corrigido para `<=`;
+  regressão em `test_reassumir_o_proprio_lease_e_idempotente`.
+- **Achado corrigido — projeto/baixa:** `_retentar_no_ciclo` relia sem dispersão entre
+  tentativas. Adicionado jitter pequeno (até 20 ms).
+- **Achado aceito, não corrigido — duplicação/baixa:** a tradução de exceção do boto3
+  para `ConflitoDeConcorrencia` se repete em cinco pontos com variações genuínas o
+  bastante para que unificá-las agora arriscasse introduzir nova assimetria.
+
 ## Spec
 
 Este eixo avalia somente requisitos ausentes ou parciais, scope creep e requisitos

@@ -369,6 +369,17 @@ def test_um_sequencial_mais_novo_sempre_assume_o_lease(repositorio: Any) -> None
     repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
 
 
+def test_reassumir_o_proprio_lease_e_idempotente(repositorio: Any) -> None:
+    # Regressão (achado do code-review): um retry automático do SDK sobre a
+    # mesma tentativa, depois que a primeira chamada já teve sucesso no
+    # servidor, não pode ser recusado como se um outro executor tivesse
+    # assumido o lease — é a mesma tentativa reafirmando o que já é seu.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+
+
 def test_um_sequencial_mais_antigo_nao_assume_lease_vigente(repositorio: Any) -> None:
     # O mesmo evento entregue duas vezes pela invocação assíncrona da Lambda não
     # depende do reconciliador para gerar esta corrida.

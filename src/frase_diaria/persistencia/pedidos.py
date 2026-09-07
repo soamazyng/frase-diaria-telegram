@@ -169,12 +169,15 @@ class RepositorioDePedidosDynamo:
 
         Um `sequencial` vem de `registrar_tentativa`, que já é atômico e
         monotônico: nenhum outro executor pode ter obtido um valor maior antes
-        deste, então a reivindicação de um lease inexistente ou mais antigo
-        sempre pode prosseguir. Falha apenas quando outro executor já detém um
-        lease **mais novo** — sinal de que esta tentativa foi superada e não deve
-        prosseguir a enviar nem confirmar nada (AC03). Um lease vencido pode ser
-        assumido por qualquer sequencial, o que evita bloqueio permanente após
-        uma queda (ticket 09).
+        deste, então a reivindicação de um lease inexistente, mais antigo ou
+        igual ao próprio sempre pode prosseguir — a igualdade é o que torna a
+        chamada idempotente: um retry automático do SDK sobre a mesma
+        tentativa, depois que a primeira já teve sucesso, não pode ser
+        recusado como se fosse de outro executor. Falha apenas quando outro
+        executor já detém um lease **mais novo** — sinal de que esta tentativa
+        foi superada e não deve prosseguir a enviar nem confirmar nada (AC03).
+        Um lease vencido pode ser assumido por qualquer sequencial, o que
+        evita bloqueio permanente após uma queda (ticket 09).
         """
         agora_utc = em_utc(agora)
         expira_em = agora_utc + duracao
@@ -184,7 +187,7 @@ class RepositorioDePedidosDynamo:
                 UpdateExpression="SET lease_dono = :seq, lease_expira_em = :exp",
                 ConditionExpression=(
                     "attribute_exists(pk) AND ("
-                    "attribute_not_exists(lease_dono) OR lease_dono < :seq "
+                    "attribute_not_exists(lease_dono) OR lease_dono <= :seq "
                     "OR lease_expira_em <= :agora)"
                 ),
                 ExpressionAttributeValues={

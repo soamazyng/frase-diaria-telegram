@@ -1,4 +1,6 @@
 import logging
+import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -108,6 +110,10 @@ class ProcessarPedido:
     # DynamoDB. O teto existe para não travar a Lambda para sempre se a
     # condição nunca puder ser satisfeita; não para poupar chamadas caras.
     MAX_TENTATIVAS_DE_CICLO: ClassVar[int] = 20
+    # Sob contenção real, vários pedidos colidem na mesma gravação ao mesmo
+    # tempo; sem dispersão, todos relêem e tentam de novo juntos, colidindo de
+    # novo. Um jitter pequeno já quebra essa sincronia (achado do code-review).
+    ESPERA_MAXIMA_ENTRE_TENTATIVAS_S: ClassVar[float] = 0.02
 
     def executar(self, identidade: str) -> Pedido | None:
         pedido = self.repositorio.obter(identidade)
@@ -331,6 +337,7 @@ class ProcessarPedido:
                 return
             except ConflitoDeConcorrencia:
                 _log.warning("conflito de concorrência no ciclo; relendo para tentar de novo")
+                time.sleep(random.uniform(0, self.ESPERA_MAXIMA_ENTRE_TENTATIVAS_S))
                 ciclo, versao_ciclo = self.ciclos.carregar()
         _log.error("ciclo não avançou após conflitos repetidos; próximo pedido reconcilia")
 
