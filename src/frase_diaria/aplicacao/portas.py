@@ -23,3 +23,12 @@ class Sorteio(Protocol):
     def escolher[T](self, candidatos: Sequence[T]) -> T:
         """Escolhe um entre os candidatos. Recebe sequência não vazia."""
         ...
+
+
+class ConflitoDeConcorrencia(RuntimeError):
+    """Uma escrita condicional perdeu a corrida: outro executor já avançou o estado.
+
+    Cobre tanto a versão do ciclo quanto o lease de um pedido — nos dois casos, a
+    escrita foi recusada porque o que estava em memória já não é o que está
+    persistido, e sobrescrever corromperia o estado (spec, 4.9).
+    """

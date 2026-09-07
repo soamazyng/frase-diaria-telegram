@@ -4,14 +4,14 @@
 
 **Blocked by:** 08 — Intenção por parte, retomada e entrega incerta.
 
-**Status:** ready-for-agent
+**Status:** concluído em 2026-09-07 — ver `docs/09-lease-escritas-condicionais-e-concorrencia.md`
 
-- [ ] Reserva de pedido e de frase acontece por escrita condicional ou transação; não há janela em que dois executores reservem a mesma frase.
-- [ ] O estado do ciclo e a sequência de envio são protegidos por lease de duração limitada com token de versão.
-- [ ] Um executor cujo lease expirou não consegue confirmar entrega nem avançar o ciclo (AC03).
-- [ ] Uma execução interrompida é reconciliável sem deixar bloqueio permanente.
-- [ ] Lease expirado é registrado na observabilidade.
-- [ ] Testes de concorrência do repositório exercitam atomicidade, retomada e corrida entre dois executores.
+- [x] Reserva de pedido e de frase acontece por escrita condicional ou transação; não há janela em que dois executores reservem a mesma frase.
+- [x] O estado do ciclo e a sequência de envio são protegidos por lease de duração limitada com token de versão.
+- [x] Um executor cujo lease expirou não consegue confirmar entrega nem avançar o ciclo (AC03).
+- [x] Uma execução interrompida é reconciliável sem deixar bloqueio permanente.
+- [x] Lease expirado é registrado na observabilidade.
+- [x] Testes de concorrência do repositório exercitam atomicidade, retomada e corrida entre dois executores.
 
 ## Vindo do code-review do ticket 05
 

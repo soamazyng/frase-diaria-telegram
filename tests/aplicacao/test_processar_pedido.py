@@ -5,11 +5,12 @@ requisição), e uma parte só conta como entregue quando o Telegram confirmou *
 a confirmação foi persistida.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
+from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido, ReservaPendente
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
@@ -47,11 +48,27 @@ class RepositorioFalso:
         self.salvos: list[Pedido] = []
         self.intencoes: list[dict[str, Any]] = []
         self.incertas: list[dict[str, Any]] = []
+        self.lease_dono: int | None = None
+        self.lease_expira_em: datetime | None = None
 
     def obter(self, identidade: str) -> Pedido | None:
         return self.pedido
 
-    def salvar(self, pedido: Pedido) -> None:
+    def assumir_lease(
+        self, pedido: str, sequencial: int, agora: datetime, duracao: timedelta
+    ) -> None:
+        lease_vencido = self.lease_expira_em is not None and agora >= self.lease_expira_em
+        if self.lease_dono is not None and sequencial <= self.lease_dono and not lease_vencido:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor")
+        self.lease_dono = sequencial
+        self.lease_expira_em = agora + duracao
+
+    def _verificar_lease(self, sequencial: int | None) -> None:
+        if sequencial is not None and self.lease_dono is not None and sequencial != self.lease_dono:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor")
+
+    def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None:
+        self._verificar_lease(sequencial)
         self.pedido = pedido
         self.salvos.append(pedido)
 
@@ -59,8 +76,15 @@ class RepositorioFalso:
         self.intencoes.append({"indice": indice, "texto": texto})
 
     def confirmar_parte(
-        self, pedido: str, indice: int, texto: str, message_id: int, instante: Any
+        self,
+        pedido: str,
+        indice: int,
+        texto: str,
+        message_id: int,
+        instante: Any,
+        sequencial: int | None = None,
     ) -> None:
+        self._verificar_lease(sequencial)
         self.partes.append({"indice": indice, "texto": texto, "message_id": message_id})
 
     def marcar_parte_incerta(self, pedido: str, indice: int, motivo: str, instante: Any) -> None:
@@ -104,26 +128,36 @@ def _pedido_pendente() -> Pedido:
 
 
 class ReservaEmMemoria:
-    """Faz o papel da transação: grava ciclo e pedido juntos."""
+    """Faz o papel da transação: grava ciclo e pedido juntos.
+
+    Se o ciclo perdeu a corrida, a gravação do pedido nem é tentada — a mesma
+    atomicidade que a transação real do DynamoDB garante.
+    """
 
     def __init__(self, ciclos: Any, repositorio: Any) -> None:
         self.ciclos = ciclos
         self.repositorio = repositorio
 
-    def efetivar(self, pedido: Any, ciclo: Any) -> None:
-        self.ciclos.salvar(ciclo)
-        self.repositorio.salvar(pedido)
+    def efetivar(
+        self, pedido: Any, ciclo: Any, versao_anterior_do_ciclo: int, sequencial: int
+    ) -> None:
+        self.ciclos.salvar(ciclo, versao_anterior_do_ciclo)
+        self.repositorio.salvar(pedido, sequencial)
 
 
 class CiclosEmMemoria:
-    def __init__(self, ciclo: Ciclo | None = None) -> None:
+    def __init__(self, ciclo: Ciclo | None = None, versao: int = 0) -> None:
         self.ciclo = ciclo if ciclo is not None else Ciclo.primeiro()
+        self.versao = versao
 
-    def carregar(self) -> Ciclo:
-        return self.ciclo
+    def carregar(self) -> tuple[Ciclo, int]:
+        return self.ciclo, self.versao
 
-    def salvar(self, ciclo: Ciclo) -> None:
+    def salvar(self, ciclo: Ciclo, versao_anterior: int) -> None:
+        if versao_anterior != self.versao:
+            raise ConflitoDeConcorrencia("ciclo foi alterado por outro executor")
         self.ciclo = ciclo
+        self.versao += 1
 
 
 def _worker(
@@ -440,6 +474,29 @@ def test_entrega_completa_consome_sem_ressalva() -> None:
     assert ciclos.ciclo.consumidas_com_ressalva == frozenset()
 
 
+class CiclosQueContamGravacoes(CiclosEmMemoria):
+    def __init__(self, ciclo: Ciclo | None = None) -> None:
+        super().__init__(ciclo)
+        self.chamadas = 0
+
+    def salvar(self, ciclo: Ciclo, versao_anterior: int) -> None:
+        self.chamadas += 1
+        super().salvar(ciclo, versao_anterior)
+
+
+def test_reservar_e_entregar_na_mesma_execucao_nao_gera_conflito_de_versao() -> None:
+    # Regressão (achado do code-review): sem avançar `versao_ciclo` em memória
+    # logo depois que `reserva.efetivar` persiste a versão seguinte, o consumo
+    # tentaria gravar com a versão já superada e cairia na retentativa por
+    # engano — mesmo sem nenhuma concorrência real, em toda entrega comum.
+    ciclos = CiclosQueContamGravacoes()
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    _worker(repositorio, CanalEspiao(), ciclos=ciclos).executar("extra#42")
+
+    assert ciclos.chamadas == 2
+
+
 # --- correções vindas do code-review -----------------------------------------
 
 
@@ -488,14 +545,14 @@ def test_o_pedido_e_gravado_antes_do_ciclo_ao_encerrar() -> None:
     ordem: list[str] = []
 
     class RepositorioQueAnota(RepositorioFalso):
-        def salvar(self, pedido: Any) -> None:
+        def salvar(self, pedido: Any, sequencial: int | None = None) -> None:
             ordem.append("pedido")
-            super().salvar(pedido)
+            super().salvar(pedido, sequencial)
 
     class CiclosQueAnotam(CiclosEmMemoria):
-        def salvar(self, ciclo: Any) -> None:
+        def salvar(self, ciclo: Any, versao_anterior: int) -> None:
             ordem.append("ciclo")
-            super().salvar(ciclo)
+            super().salvar(ciclo, versao_anterior)
 
     reservado = _pedido_pendente().reservar("bloco-1")
     repositorio = RepositorioQueAnota(reservado)
@@ -518,3 +575,118 @@ def test_tentativa_e_duravel_antes_de_ler_a_fonte() -> None:
         _worker(repositorio, CanalEspiao(), fonte=FonteInterrompida()).executar("extra#42")
 
     assert len(repositorio.tentativas) == 1
+
+
+# --- lease e concorrência (ticket 09) -----------------------------------------
+
+
+def test_lease_de_outro_executor_aborta_sem_tocar_o_pedido() -> None:
+    # Um sequencial mais novo já assumiu o lease — o mesmo evento entregue duas
+    # vezes pela invocação assíncrona da Lambda, por exemplo. Esta execução
+    # encerra sem disputar um estado que já não é seu (AC03).
+    pendente = _pedido_pendente()
+    repositorio = RepositorioFalso(pendente)
+    repositorio.lease_dono = 5
+    repositorio.lease_expira_em = INSTANTE + timedelta(minutes=10)
+    canal = CanalEspiao()
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is pendente
+    assert canal.enviados == []
+    assert repositorio.salvos == []
+    assert repositorio.tentativas[-1]["resultado"] == "aguardando"
+
+
+class ReservaQueRecusaAPrimeira:
+    """Simula dois executores disputando a mesma versão do ciclo."""
+
+    def __init__(self, ciclos: Any, repositorio: Any) -> None:
+        self.ciclos = ciclos
+        self.repositorio = repositorio
+        self.chamadas = 0
+
+    def efetivar(
+        self, pedido: Any, ciclo: Any, versao_anterior_do_ciclo: int, sequencial: int
+    ) -> None:
+        self.chamadas += 1
+        if self.chamadas == 1:
+            raise ConflitoDeConcorrencia("ciclo foi alterado por outro executor")
+        self.ciclos.salvar(ciclo, versao_anterior_do_ciclo)
+        self.repositorio.salvar(pedido, sequencial)
+
+
+def test_conflito_ao_reservar_propaga_como_reserva_pendente() -> None:
+    # Uma nova tentativa relê o ciclo do zero em vez de tentar de novo no lugar:
+    # a frase sorteada pode já não ser a melhor escolha.
+    repositorio = RepositorioFalso(_pedido_pendente())
+    ciclos = CiclosEmMemoria()
+    reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
+    worker = ProcessarPedido(
+        repositorio=repositorio,
+        fonte=FonteFixa(),
+        canal=CanalEspiao(),
+        sorteio=SorteioPrevisivel(),
+        relogio=RelogioFixo(),
+        ciclos=ciclos,
+        reserva=reserva,
+    )
+
+    with pytest.raises(ReservaPendente):
+        worker.executar("extra#42")
+
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+    assert repositorio.pedido.frase_reservada is None
+    assert repositorio.tentativas[-1]["resultado"] == "aguardando"
+
+
+class CiclosComConflitoAoConsumir(CiclosEmMemoria):
+    """A gravação da reserva (1ª chamada) vence; a do consumo (2ª) perde a
+    corrida uma vez e só vence ao reler e tentar de novo (3ª chamada)."""
+
+    def __init__(self, ciclo: Ciclo | None = None) -> None:
+        super().__init__(ciclo)
+        self.chamadas = 0
+
+    def salvar(self, ciclo: Ciclo, versao_anterior: int) -> None:
+        self.chamadas += 1
+        if self.chamadas == 2:
+            raise ConflitoDeConcorrencia("ciclo foi alterado por outro executor")
+        super().salvar(ciclo, versao_anterior)
+
+
+def test_lease_perdido_no_meio_do_envio_abandona_sem_reenviar() -> None:
+    # Um sequencial mais novo assumiu o lease depois que esta execução já tinha
+    # começado a enviar: a confirmação da parte seguinte é recusada, e a
+    # execução superada devolve o pedido como leu no início, sem reenviar nada.
+    pendente = _pedido_pendente()
+    repositorio = RepositorioFalso(pendente)
+    canal = CanalEspiao()
+    worker = _worker(repositorio, canal)
+
+    original_confirmar = repositorio.confirmar_parte
+
+    def confirmar_e_perder_o_lease(*args: Any, **kwargs: Any) -> None:
+        repositorio.lease_dono = 999  # outro executor assumiu o lease
+        original_confirmar(*args, **kwargs)
+
+    repositorio.confirmar_parte = confirmar_e_perder_o_lease  # type: ignore[method-assign]
+
+    resultado = worker.executar("extra#42")
+
+    assert resultado is pendente
+    assert repositorio.tentativas[-1]["resultado"] == "superado"
+
+
+def test_conflito_ao_consumir_rele_o_ciclo_e_tenta_de_novo() -> None:
+    # O pedido já está em estado terminal quando o ciclo é atualizado: um
+    # conflito aqui não pode abortar o pedido, só reler e tentar de novo — outro
+    # pedido pode ter avançado o mesmo item de ciclo compartilhado (ticket 09).
+    repositorio = RepositorioFalso(_pedido_pendente())
+    ciclos = CiclosComConflitoAoConsumir()
+
+    _worker(repositorio, CanalEspiao(), ciclos=ciclos).executar("extra#42")
+
+    assert ciclos.chamadas == 3
+    assert ciclos.ciclo.foi_consumida("bloco-1")

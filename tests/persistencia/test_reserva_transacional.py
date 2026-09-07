@@ -3,15 +3,19 @@
 Uma gravação parcial deixaria o ciclo com uma frase reservada que pedido nenhum
 conhece. Como `Ciclo.esgotado` exige ausência de reservas, o ciclo nunca
 reiniciaria e o bot pararia de entregar em silêncio.
+
+A condição de versão no ciclo e de lease no pedido é o que decide, entre dois
+executores concorrentes, qual dos dois efetiva a reserva (ticket 09).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
 import pytest
 from moto import mock_aws
 
+from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.persistencia.ciclos import RepositorioDeCiclosDynamo
@@ -51,9 +55,11 @@ def test_efetivar_grava_ciclo_e_pedido(contexto: Any) -> None:
     contexto["pedidos"].criar_se_ausente(PEDIDO, INSTANTE)
     ciclo = Ciclo.primeiro().reservar("f1")
 
-    contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo)
+    contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo, 0, sequencial=1)
 
-    assert contexto["ciclos"].carregar().reservadas == frozenset({"f1"})
+    ciclo_gravado, versao = contexto["ciclos"].carregar()
+    assert ciclo_gravado.reservadas == frozenset({"f1"})
+    assert versao == 1
     gravado = contexto["pedidos"].obter("extra#42")
     assert gravado is not None
     assert gravado.frase_reservada == "f1"
@@ -65,7 +71,46 @@ def test_pedido_inexistente_impede_a_reserva_inteira(contexto: Any) -> None:
     # reserva órfã apontando para um pedido que não existe.
     ciclo = Ciclo.primeiro().reservar("f1")
 
-    with pytest.raises(Exception, match="Transaction|Condition"):
-        contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo)
+    with pytest.raises(ConflitoDeConcorrencia):
+        contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo, 0, sequencial=1)
 
-    assert contexto["ciclos"].carregar().reservadas == frozenset()
+    assert contexto["ciclos"].carregar()[0].reservadas == frozenset()
+
+
+# --- concorrência (ticket 09) -------------------------------------------------
+
+
+def test_dois_executores_disputando_a_mesma_versao_do_ciclo_so_um_vence(contexto: Any) -> None:
+    contexto["pedidos"].criar_se_ausente(PEDIDO, INSTANTE)
+    ciclo, versao = contexto["ciclos"].carregar()
+
+    # Os dois leram a mesma versão do ciclo e sortearam frases diferentes.
+    contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo.reservar("f1"), versao, sequencial=1)
+    with pytest.raises(ConflitoDeConcorrencia):
+        contexto["reserva"].efetivar(
+            PEDIDO.reservar("f2"), ciclo.reservar("f2"), versao, sequencial=2
+        )
+
+    ciclo_final, _ = contexto["ciclos"].carregar()
+    assert ciclo_final.reservadas == frozenset({"f1"})
+    gravado = contexto["pedidos"].obter("extra#42")
+    assert gravado is not None
+    assert gravado.frase_reservada == "f1"
+
+
+def test_lease_do_pedido_impede_reserva_por_um_sequencial_mais_antigo(contexto: Any) -> None:
+    # Um sequencial maior já assumiu o lease do pedido (ex.: o mesmo evento
+    # entregue duas vezes pela invocação assíncrona da Lambda); a tentativa mais
+    # antiga não pode mais efetivar reserva nenhuma para este pedido (AC03).
+    contexto["pedidos"].criar_se_ausente(PEDIDO, INSTANTE)
+    contexto["pedidos"].assumir_lease(
+        "extra#42", sequencial=2, agora=INSTANTE, duracao=timedelta(minutes=5)
+    )
+    ciclo, versao = contexto["ciclos"].carregar()
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        contexto["reserva"].efetivar(
+            PEDIDO.reservar("f1"), ciclo.reservar("f1"), versao, sequencial=1
+        )
+
+    assert contexto["ciclos"].carregar()[0].reservadas == frozenset()

@@ -14,6 +14,7 @@ import pytest
 from moto import mock_aws
 
 from frase_diaria.aplicacao.criar_diaria import CriarDiaria
+from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.persistencia.migrar_pendencias import indexar_pedidos_legados
 from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
@@ -354,3 +355,63 @@ def test_adocao_dos_legados_e_aditiva_paginada_e_reexecutavel(
     assert indexar_pedidos_legados(repositorio.tabela) == 0
     assert [p.identidade for p in repositorio.buscar_vencidos(INSTANTE)] == ["antigo"]
     assert repositorio.indices_confirmados("antigo") == {0}
+
+
+# --- lease e concorrência (ticket 09) -----------------------------------------
+
+
+def test_um_sequencial_mais_novo_sempre_assume_o_lease(repositorio: Any) -> None:
+    # O sequencial vem de um contador atômico: quando este executor o obteve,
+    # nenhum outro ainda tinha um valor maior. A reivindicação nunca bloqueia.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+
+def test_um_sequencial_mais_antigo_nao_assume_lease_vigente(repositorio: Any) -> None:
+    # O mesmo evento entregue duas vezes pela invocação assíncrona da Lambda não
+    # depende do reconciliador para gerar esta corrida.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+
+
+def test_lease_vencido_pode_ser_assumido_por_qualquer_sequencial(repositorio: Any) -> None:
+    # Sem isto, uma execução que travou sem nunca renovar o lease bloquearia o
+    # pedido para sempre — o ticket exige que seja reconciliável.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 5, INSTANTE, timedelta(minutes=5))
+    depois_de_vencer = INSTANTE + timedelta(minutes=6)
+
+    repositorio.assumir_lease(PEDIDO.identidade, 1, depois_de_vencer, timedelta(minutes=5))
+
+
+def test_salvar_recusa_um_sequencial_que_ja_nao_e_dono_do_lease(repositorio: Any) -> None:
+    # É o que impede um executor superado de confirmar o estado final do
+    # pedido — mesmo que ele só descubra isso ao tentar gravar (AC03).
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.salvar(PEDIDO.reservar("f1"), sequencial=1)
+
+    repositorio.salvar(PEDIDO.reservar("f1"), sequencial=2)
+    assert repositorio.obter(PEDIDO.identidade).frase_reservada == "f1"
+
+
+def test_confirmar_parte_recusa_um_sequencial_que_ja_nao_e_dono_do_lease(repositorio: Any) -> None:
+    # "Confirmar entrega" é literalmente isto: sem a condição, um executor
+    # superado poderia gravar uma confirmação depois que outro já concluiu.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.confirmar_parte(PEDIDO.identidade, 0, "texto", 901, INSTANTE, sequencial=1)
+
+    repositorio.confirmar_parte(PEDIDO.identidade, 0, "texto", 901, INSTANTE, sequencial=2)
+    assert repositorio.indices_confirmados(PEDIDO.identidade) == {0}

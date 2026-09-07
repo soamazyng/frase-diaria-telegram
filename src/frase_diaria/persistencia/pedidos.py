@@ -1,11 +1,12 @@
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
 from frase_diaria.aplicacao.diagnostico import erro_sanitizado
+from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.dominio.tempo import em_utc
 
@@ -101,11 +102,14 @@ class RepositorioDePedidosDynamo:
             )
         return pedido
 
-    def salvar(self, pedido: Pedido) -> None:
+    def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None:
         """Atualiza um pedido existente.
 
         A condição impede o upsert que o `update_item` faria por padrão: salvar o
-        estado de um pedido nunca criado o inventaria na tabela.
+        estado de um pedido nunca criado o inventaria na tabela. Quando
+        `sequencial` é informado, ele precisa ser o dono do lease vigente — é o
+        que impede um executor cujo lease já foi transferido de confirmar um
+        estado (ticket 09).
         """
         valores: dict[str, Any] = {
             ":e": pedido.estado_legado,
@@ -140,12 +144,57 @@ class RepositorioDePedidosDynamo:
             + ", ".join(f":terminal{i}" for i in range(len(terminais)))
             + ")"
         )
-        self.tabela.update_item(
-            Key={"pk": self.chave_do_pedido(pedido.identidade), "sk": "pedido"},
-            UpdateExpression=expressao,
-            ExpressionAttributeValues=valores,
-            ConditionExpression=condicao,
-        )
+        if sequencial is not None:
+            valores[":lease"] = sequencial
+            condicao += " AND (attribute_not_exists(lease_dono) OR lease_dono = :lease)"
+        try:
+            self.tabela.update_item(
+                Key={"pk": self.chave_do_pedido(pedido.identidade), "sk": "pedido"},
+                UpdateExpression=expressao,
+                ExpressionAttributeValues=valores,
+                ConditionExpression=condicao,
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            if sequencial is None:
+                raise
+            # A condição reúne dois motivos possíveis — o pedido já chegou a um
+            # estado terminal, ou o lease já foi transferido — e os dois dizem a
+            # mesma coisa para quem chama: outro executor já avançou o pedido.
+            raise ConflitoDeConcorrencia("outro executor já avançou este pedido") from None
+
+    def assumir_lease(
+        self, pedido: str, sequencial: int, agora: datetime, duracao: timedelta
+    ) -> None:
+        """Reivindica a exclusividade sobre o envio deste pedido por tempo limitado.
+
+        Um `sequencial` vem de `registrar_tentativa`, que já é atômico e
+        monotônico: nenhum outro executor pode ter obtido um valor maior antes
+        deste, então a reivindicação de um lease inexistente ou mais antigo
+        sempre pode prosseguir. Falha apenas quando outro executor já detém um
+        lease **mais novo** — sinal de que esta tentativa foi superada e não deve
+        prosseguir a enviar nem confirmar nada (AC03). Um lease vencido pode ser
+        assumido por qualquer sequencial, o que evita bloqueio permanente após
+        uma queda (ticket 09).
+        """
+        agora_utc = em_utc(agora)
+        expira_em = agora_utc + duracao
+        try:
+            self.tabela.update_item(
+                Key={"pk": self.chave_do_pedido(pedido), "sk": "pedido"},
+                UpdateExpression="SET lease_dono = :seq, lease_expira_em = :exp",
+                ConditionExpression=(
+                    "attribute_exists(pk) AND ("
+                    "attribute_not_exists(lease_dono) OR lease_dono < :seq "
+                    "OR lease_expira_em <= :agora)"
+                ),
+                ExpressionAttributeValues={
+                    ":seq": sequencial,
+                    ":exp": expira_em.isoformat(timespec="microseconds"),
+                    ":agora": agora_utc.isoformat(timespec="microseconds"),
+                },
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
     def registrar_intencao_parte(
         self, pedido: str, indice: int, texto: str, instante: datetime
@@ -168,25 +217,53 @@ class RepositorioDePedidosDynamo:
         )
 
     def confirmar_parte(
-        self, pedido: str, indice: int, texto: str, message_id: int, instante: datetime
+        self,
+        pedido: str,
+        indice: int,
+        texto: str,
+        message_id: int,
+        instante: datetime,
+        sequencial: int | None = None,
     ) -> None:
         """Registra uma parte como entregue, com o texto que foi de fato enviado.
 
         Guardar o texto — e não uma referência à frase — é o que preserva o
-        histórico quando a origem muda depois (spec, 4.8).
+        histórico quando a origem muda depois (spec, 4.8). Quando `sequencial` é
+        informado, a confirmação só vale se ainda for o dono do lease: é a
+        garantia de que um executor superado não confirma entrega (AC03).
         """
-        self.tabela.put_item(
-            Item={
-                "pk": self.chave_do_pedido(pedido),
-                "sk": f"parte#{indice:03d}",
-                "indice": indice,
-                "identidade": Pedido.identidade_de_parte(pedido, indice),
-                "texto": texto,
-                "message_id": message_id,
-                "estado": "confirmada",
-                "confirmada_em": em_utc(instante).isoformat(timespec="microseconds"),
-            }
-        )
+        item = {
+            "pk": self.chave_do_pedido(pedido),
+            "sk": f"parte#{indice:03d}",
+            "indice": indice,
+            "identidade": Pedido.identidade_de_parte(pedido, indice),
+            "texto": texto,
+            "message_id": message_id,
+            "estado": "confirmada",
+            "confirmada_em": em_utc(instante).isoformat(timespec="microseconds"),
+        }
+        if sequencial is None:
+            self.tabela.put_item(Item=item)
+            return
+        nome = self.tabela.name
+        try:
+            self.tabela.meta.client.transact_write_items(
+                TransactItems=[
+                    {
+                        "ConditionCheck": {
+                            "TableName": nome,
+                            "Key": {"pk": self.chave_do_pedido(pedido), "sk": "pedido"},
+                            "ConditionExpression": (
+                                "attribute_not_exists(lease_dono) OR lease_dono = :seq"
+                            ),
+                            "ExpressionAttributeValues": {":seq": sequencial},
+                        }
+                    },
+                    {"Put": {"TableName": nome, "Item": item}},
+                ]
+            )
+        except self.tabela.meta.client.exceptions.TransactionCanceledException:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
     def marcar_parte_incerta(
         self, pedido: str, indice: int, motivo: str, instante: datetime

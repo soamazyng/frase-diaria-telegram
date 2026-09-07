@@ -28,7 +28,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 06 | Concluído | Declarada na mensagem completa de `fe1fad9`; `08f8dc6` registra exercício AWS, não um re-review final | Spec: OK no escopo; Standards: achados, incluindo débito conhecido |
 | 07 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 08 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
-| 09 | Pendente | Não aplicável ainda | Pendente |
+| 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
 | 10 | Pendente | Não aplicável ainda | Pendente |
 | 11 | Pendente | Não aplicável ainda | Pendente |
 | 12 | Pendente | Não aplicável ainda | Pendente |
@@ -191,6 +191,20 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
 - **Baseline atual — julgamento:** possível Primitive Obsession nos vários
   `frozenset[str]` e parâmetros `frase: str` de `src/frase_diaria/dominio/ciclo.py`.
 
+### Ticket 09
+
+- **Achado corrigido — concorrência/alta:** `aplicacao/processar_pedido.py` não avançava
+  a variável local `versao_ciclo` em memória depois que `reserva.efetivar` persistia a
+  versão seguinte, então toda entrega comum (sem concorrência real) caía num conflito de
+  versão espúrio ao gravar o consumo, mascarado pela retentativa. Corrigido incrementando
+  `versao_ciclo` logo após a reserva; regressão coberta por
+  `tests/aplicacao/test_processar_pedido.py::test_reservar_e_entregar_na_mesma_execucao_nao_gera_conflito_de_versao`.
+- **Achado corrigido — projeto/média:** `_retentar_no_ciclo` desistia em silêncio após 5
+  tentativas, arriscando (sob contenção real) deixar o consumo de uma frase sem persistir
+  enquanto o pedido já está terminal. A margem foi ampliada para 20 — a operação é local e
+  barata, sem chamada ao Telegram, então o custo de mais tentativas é desprezível frente ao
+  risco de esgotá-las.
+
 ## Spec
 
 Este eixo avalia somente requisitos ausentes ou parciais, scope creep e requisitos
@@ -246,6 +260,12 @@ incorretamente.
 Nenhum requisito próprio do ticket está ausente/parcial, fora do escopo ou implementado
 incorretamente, consideradas as dependências planejadas abaixo.
 
+### Ticket 09 — OK após correção
+
+Os dois achados de Standards acima também eram lacunas de Spec (AC03 e "execução
+interrompida é reconciliável sem bloqueio permanente"); corrigidos antes deste registro,
+não há requisito ausente/parcial, scope creep ou implementado incorretamente pendente.
+
 ## Débitos deliberadamente encaminhados
 
 Não contam como falha oculta do ticket que os originou:
@@ -256,19 +276,20 @@ Não contam como falha oculta do ticket que os originou:
 - substituição da fixture, mudanças/exclusões e snapshot: tickets 10 e 11;
 - retentativas, classificação de erro transitório e retomada automática: ticket 14.
 
-O débito de concorrência do ticket 06 continua sendo risco real até o ticket 09, mas foi
-explicitamente documentado. Do mesmo modo, o exercício AWS de 06 mostrou um pedido que
-precisou de retomada manual; o ticket 14 já registra a necessidade de o reconciliador
-alcançar esse estado.
+O débito de concorrência do ticket 06 foi resolvido pelo ticket 09 (versão do ciclo e
+lease do pedido). Do mesmo modo, o exercício AWS de 06 mostrou um pedido que precisou de
+retomada manual; o ticket 14 já registra a necessidade de o reconciliador alcançar esse
+estado.
 
 ## Resultado
 
 - Tickets com code-review histórico declarado: **02, 05 e 06**.
 - Tickets concluídos sem evidência histórica localizada de code-review: **03 e 04**.
 - Ticket administrativo sem implementação de código a certificar: **01**.
-- Ticket em implementação e ainda pendente de review: **07**.
-- Tickets ainda pendentes: **08–22**.
+- Tickets concluídos com review executado no diretório de trabalho: **07, 08 e 09** — 09
+  com achados corrigidos antes do commit.
+- Tickets ainda pendentes: **10–22**.
 
 Não há base para registrar “OK final pós-correção” em 02, 05 ou 06. O próximo marco
-confiável é corrigir ou aceitar explicitamente os achados vigentes, concluir o ticket 07 e
-executar novo code-review sobre um ponto fixo posterior às últimas alterações.
+confiável é corrigir ou aceitar explicitamente os achados vigentes e executar novo
+code-review sobre um ponto fixo posterior às últimas alterações.
