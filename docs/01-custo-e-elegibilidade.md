@@ -174,36 +174,24 @@ role explícita em vez de criar a sua. O contorno tem dois defeitos: depende de
 específicas por função", porque reaproveita uma role de tutorial com escopo
 desconhecido. Serve para destravar um experimento, não para a versão final.
 
-### R6 — Hipótese: a conta pode estar sob uma Service Control Policy (ABERTO)
+### R6 — Hipótese de Service Control Policy: **DESCARTADA**
 
-A conta tem `AWSServiceRoleForOrganizations` e `AWSServiceRoleForSSO`, o que
-indica pertencer a uma AWS Organization. `organizations:DescribeOrganization` está
-negado, então não dá para confirmar pela API.
+A conta tem `AWSServiceRoleForOrganizations` e `AWSServiceRoleForSSO`, o que levantou
+a suspeita de uma SCP negando escrita em IAM — caso em que nem o root da conta
+resolveria.
 
-Isso importa porque **uma SCP vence sobre políticas de identidade**: se houver uma
-SCP negando escrita em IAM, conceder permissões ao usuário — ou até usar o root da
-conta — não resolve. Antes de investir em ajustar permissões, vale confirmar no
-console (IAM → Access Analyzer, ou a página da conta em Organizations) se a conta é
-membro de uma organização e se há SCP restringindo IAM.
+**A mensagem de erro da AWS descarta a hipótese.** Ao negar, ela diz:
 
-Se a hipótese se confirmar, a única saída é uma **conta AWS fora dessa
-organização**.
+> `is not authorized to perform: iam:GetUser ... because **no identity-based policy
+> allows** the iam:GetUser action`
 
-### R5 — Elegibilidade de franquia não verificável nesta conta (ABERTO)
+Quando a negativa vem de uma SCP, a AWS usa outra formulação, citando
+explicitamente o *explicit deny in a service control policy*. A formulação obtida
+indica ausência de permissão na política de identidade, não bloqueio
+organizacional.
 
-`freetier:GetFreeTierUsage` está negado, então não foi possível confirmar pela API
-se a conta ainda tem franquia de 12 meses ou apenas o Always Free. Como a conta
-vem de um curso, o mais provável é que já tenha passado dos 12 meses.
-
-Isso **não muda a conclusão**: a estimativa da seção 3 mostra que o bot cabe no
-Always Free, e os serviços de franquia limitada custam centavos sem ela.
-
-### R4 — VPC e NAT
-
-**Não serão usados.** Lambda, DynamoDB, S3 e API Gateway são acessados pelos
-endpoints públicos dos serviços com IAM. Um NAT Gateway custaria cerca de US$32/mês
-sozinho — mais que todo o resto do projeto somado. Nenhum requisito da spec exige
-rede privada.
+**Conclusão:** basta anexar as permissões ao usuário. O JSON pronto está em
+`docs/aws-policy-bootstrap.json`.
 
 ## 6. Pendências que dependem da usuária
 
@@ -211,11 +199,11 @@ rede privada.
 - [x] Definir a conta AWS: **712790115760**.
 - [x] Corrigir a seção do perfil no `~/.aws/config` para `[profile perfil-padrao]`.
 - [x] Confirmar a região: **us-east-1**.
-- [ ] **B1 — liberar escrita em IAM** (risco R3): `iam:CreateRole`,
-      `iam:CreateOpenIDConnectProvider`, `iam:AttachRolePolicy`, `iam:PassRole`.
-      Sem isso os tickets 03 e 16 não avançam.
-- [ ] **B2 — confirmar se há SCP bloqueando IAM** (risco R6). Fazer *antes* de B1:
-      se houver, ajustar permissões do usuário não adianta.
+- [ ] **B1 — anexar `docs/aws-policy-bootstrap.json` ao usuário
+      `aws-developer-group`.** Sem isso os tickets 03 e 16 não avançam. Duas
+      tentativas de ajuste manual não surtiram efeito; o JSON existe para
+      eliminar a chance de faltar alguma ação.
+- [x] B2 — hipótese de SCP descartada pela mensagem de erro da AWS (risco R6).
 - [ ] Confirmar o plano do GitHub. O token tem `gist, read:org, repo, workflow`,
       mas falta `user`; o refresh ainda não foi aplicado.
 - [x] Alertas de billing na AWS — já configurados pela usuária.
