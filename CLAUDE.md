@@ -133,7 +133,8 @@ Cada mudança deve mapear para um AC da seção 5 da spec. O aceite AWS (entrega
 Já fechadas — implemente conforme descrito, não reabra:
 - **Janela dos extras:** `/frase` antes das 12:00 pode retentar até as 12:00; a partir das 12:00, tentativa única imediata e, falhando, encerra com diagnóstico. Sem fila para o dia seguinte.
 - **Entrega incerta:** tratamento conservador — marcar a parte como incerta e suspender o reenvio automático, aceitando o risco de uma mensagem perdida em troca de não duplicar.
-- **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 2.000 do plano Free — ~US$53/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
+- **GitHub:** conta `soamazyng`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
+- **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 3.000 do Pro — ~US$34/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
 - **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`. A identidade `user/aws-developer-group` **não tem permissões de IAM, SSM nem Secrets Manager** — os tickets 03 e 16 dependem de resolver isso (risco R3 em `docs/01-custo-e-elegibilidade.md`).
 - **Sem VPC nem NAT.** Um NAT Gateway custaria ~US$32/mês sozinho e nenhum requisito exige rede privada.
 

@@ -19,7 +19,7 @@
 | Perfil local | `perfil-padrao` (no `~/.aws/config`) |
 | Conta GitHub | `soamazyng` (pessoal, criada em 2010-10-17) |
 | Repositório | `soamazyng/frase-diaria-telegram` — privado ✓ |
-| Plano do GitHub | **PENDENTE** — token do `gh` sem escopo `user` |
+| Plano do GitHub | **Pro** ✓ (já assinado, US$4/mês, anterior ao projeto) |
 
 A conta 712790115760 é a mesma do perfil `bedrock-curso`, originalmente de curso.
 A escolha foi da usuária, ciente de que o billing fica misturado com material de
@@ -71,26 +71,33 @@ as contas, novas e antigas** — e é nele que este projeto se apoia.
 
 ## 4. Elegibilidade — GitHub Actions
 
-O plano Free dá **2.000 minutos/mês** em repositório privado, e o GitHub arredonda
-cada execução para **1 minuto cheio**. Isso torna o intervalo de um workflow
-periódico uma decisão de custo, não de conveniência.
+A conta está no plano **Pro**, que inclui **3.000 minutos/mês** para repositórios
+privados e 1 GB de artefatos. O excedente custa US$0,006/min (Linux). O GitHub
+arredonda cada execução para **1 minuto cheio**, o que torna o intervalo de um
+workflow periódico uma decisão de custo, não de conveniência.
 
-| Intervalo do reconciliador de publicações | Execuções/mês | Minutos | Cabe? |
+| Intervalo do reconciliador de publicações | Execuções/mês | Minutos | Cabe em 3.000? |
 |---|---|---|---|
-| 5 min | 8.640 | 8.640 | ✗ ~US$53/mês de excedente |
-| 15 min | 2.880 | 2.880 | ✗ estoura |
-| 30 min | 1.440 | 1.440 | ⚠ sobram ~560 min |
-| **1 hora — decidido** | **720** | **720** | ✓ |
+| 5 min | 8.640 | 8.640 | ✗ ~US$34/mês de excedente |
+| 15 min | 2.880 | 2.880 | ⚠ quase nada sobra |
+| 30 min | 1.440 | 1.440 | ✓ |
+| **1 hora — decidido** | **720** | **720** | ✓ com folga |
 
-Orçamento mensal de Actions com o intervalo decidido:
+Orçamento mensal com o intervalo decidido:
 
 | Uso | Minutos |
 |---|---|
 | Reconciliador de publicações (1h) | 720 |
 | Pipeline por push em `develop` (~20 × 8 min) | ~160 |
-| **Total** | **~880 de 2.000** |
+| **Total** | **~880 de 3.000 (29%)** |
 
-Sobra em torno de 1.100 minutos de folga para pushes extras e reexecuções.
+Sobram cerca de 2.100 minutos. Se a recuperação de meia em meia hora passar a
+parecer valiosa, o orçamento comporta (1.600 de 3.000); a decisão de 1 hora
+permanece por conservadorismo, não por limite.
+
+**Consumo atual de Actions:** praticamente nulo — 4 minutos em março e 1 em agosto
+de 2026, ambos integralmente cobertos pela franquia. Nenhum valor líquido foi
+cobrado.
 
 > **Não confundir os dois reconciliadores.** O de *pedidos* roda em Lambda a cada
 > 5 minutos e é praticamente grátis (seção 3). O de *publicações* roda em GitHub
@@ -98,22 +105,20 @@ Sobra em torno de 1.100 minutos de folga para pushes extras e reexecuções.
 
 ## 5. Riscos e incompatibilidades registrados
 
-### R1 — Proteção de `main` é incompatível com o plano Free (ABERTO)
+### R1 — Proteção de `main`: **RESOLVIDO**
 
-Em repositório **privado no plano Free**, o GitHub permite *configurar* branch
-protection mas **não a aplica**. O AC29 exige que a proteção seja exercitada no
-repositório real e impeça merge com checks falhos ou ausentes.
+O risco supunha plano Free, em que repositório privado permite *configurar* branch
+protection mas não a aplica — o que inviabilizaria o AC29.
 
-Alternativas:
+**A conta está no plano Pro**, que aplica branch protection em repositórios
+privados. O AC29 é atendível como especificado, sem tornar o repositório público e
+sem relaxar a exigência.
 
-1. **Manter Free** e registrar o AC29 como não atendível no plano atual. Custo
-   recorrente segue R$0; o merge continua manual, sem trava técnica.
-2. **Assinar GitHub Pro** (US$4/mês, ~R$22). O AC29 passa de verdade e a meta R$0
-   vira "custo aceito e registrado".
-
-Tornar o repositório público **não é alternativa**: a spec proíbe explicitamente.
-
-**Decisão adiada pela usuária.** Trava de fato apenas no ticket 21.
+Quanto ao custo: o Pro custa US$4/mês, **mas já era assinado antes deste projeto**.
+Não é despesa nova nem atribuível ao bot, então a meta de custo recorrente
+adicional R$0 segue de pé. Vale registrar a dependência: se o plano for rebaixado
+para Free no futuro, o AC29 deixa de ser atendível e o ticket 21 precisa ser
+revisto.
 
 ### R2 — Armazenamento de segredos: SSM indisponível, Secrets Manager custa (ABERTO)
 
@@ -204,8 +209,7 @@ organizacional.
       tentativas de ajuste manual não surtiram efeito; o JSON existe para
       eliminar a chance de faltar alguma ação.
 - [x] B2 — hipótese de SCP descartada pela mensagem de erro da AWS (risco R6).
-- [ ] Confirmar o plano do GitHub. O token tem `gist, read:org, repo, workflow`,
-      mas falta `user`; o refresh ainda não foi aplicado.
+- [x] Plano do GitHub confirmado: **Pro**, 3.000 min/mês (2026-09-07).
 - [x] Alertas de billing na AWS — já configurados pela usuária.
 
 ### Higiene de credenciais pendente
