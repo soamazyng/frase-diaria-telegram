@@ -6,11 +6,11 @@
 
 **Status:** ready-for-agent
 
-- [ ] Um workflow periódico consulta o manifesto de publicação e o estado do PR, cobrindo runner interrompido e falha do evento de fechamento.
+- [ ] Um workflow periódico **de hora em hora** consulta o manifesto de publicação e o estado do PR, cobrindo runner interrompido e falha do evento de fechamento. *(Intervalo decidido pela usuária: 720 min/mês cabem nos 2.000 do plano Free; 5 em 5 minutos custaria ~US$53/mês em minutos excedentes.)*
 - [ ] O reconciliador adquire a mesma exclusão mútua de produção antes de agir, e reconsulta o estado após esperar.
 - [ ] Uma publicação registrada como "em andamento" há tempo demais é reconciliada em vez de ficar travando o grupo indefinidamente.
 - [ ] Deploys, rollback e fechamento de PR concorrentes não sobrescrevem uma versão mais recente por evento obsoleto (AC23).
 - [ ] Atualização e recuperação preservam histórico e compatibilidade dos dados (AC26).
 - [ ] Mudanças de dados são aditivas e legíveis pela versão anterior; nenhuma migração destrutiva entra no MVP.
 - [ ] O histórico não volta no tempo e mensagens já enviadas permanecem no Telegram, mesmo após recuperação.
-- [ ] O custo da execução periódica entra na estimativa registrada no ticket 01.
+- [x] O custo da execução periódica entra na estimativa registrada no ticket 01 (`docs/01-custo-e-elegibilidade.md`, seção 4).
