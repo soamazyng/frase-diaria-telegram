@@ -38,6 +38,18 @@ O empacotamento instala dependências para `aarch64-manylinux2014`, **não** par
 máquina local — instalar no macOS produz binários que só quebram em execução.
 
 `GET /health`: https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
+`POST /telegram/webhook`: mesma origem, registrado no Telegram.
+
+### Segredos
+
+No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
+`telegram-chat-id` (**672024065** — é a conversa da usuária, não o id do bot,
+que é 8340090374), `webhook-secret`. Nunca colar valores de segredo em conversa
+com agente: gravar sempre de um terminal separado. A Lambda cacheia os segredos
+por container, então mudar um parâmetro exige republicar para valer de imediato.
+
+`getUpdates` não funciona enquanto o webhook estiver registrado; para depurar,
+`deleteWebhook` antes e registrar de novo depois.
 
 `tests/test_arquitetura.py` falha se `dominio` ou `aplicacao` importarem `fastapi`, `mangum`, `starlette`, `boto3` ou `botocore`. Se precisar de uma dessas numa camada pura, o desenho está errado, não o teste.
 
