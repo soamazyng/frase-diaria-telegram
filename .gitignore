@@ -1,0 +1,26 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Caches de ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build e empacotamento
+dist/
+build/
+*.egg-info/
+.aws-sam/
+
+# Segredos: nunca versionar token do Notion, token do Telegram, chat_id
+# nem segredo do webhook
+.env
+.env.*
+!.env.example
+samconfig.toml
+
+# IDE
+.idea/
+.vscode/
