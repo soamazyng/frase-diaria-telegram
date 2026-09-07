@@ -38,36 +38,14 @@ Globals:
 Resources:
   # Stage $default não prefixa o caminho: GET /health chega ao FastAPI como
   # /health. Uma REST API com stage Prod entregaria /Prod/health e daria 404.
+  #
+  # As rotas vêm dos Events das funções. Declará-las também num DefinitionBody
+  # faria o SAM fundir duas fontes que podem divergir em silêncio.
   Http:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: $default
-      DefinitionBody:
-        openapi: "3.0.1"
-        info:
-          title: !Sub "${Prefixo}-http"
-          version: "1.0"
-        paths:
-          /telegram/webhook:
-            post:
-              responses:
-                "200":
-                  description: reconhecido
-              x-amazon-apigateway-integration:
-                type: aws_proxy
-                httpMethod: POST
-                payloadFormatVersion: "2.0"
-                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Funcao.Arn}/invocations"
-          /health:
-            get:
-              responses:
-                "200":
-                  description: saúde e versão
-              x-amazon-apigateway-integration:
-                type: aws_proxy
-                httpMethod: POST
-                payloadFormatVersion: "2.0"
-                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Funcao.Arn}/invocations"
+      Description: !Sub "Entrada HTTP do ${Prefixo}"
 
   # A fronteira HTTP: valida, registra o pedido e acorda o worker. Nunca entrega
   # a frase — isso exigiria trabalho depois de responder ao Telegram.
@@ -82,22 +60,13 @@ Resources:
       Policies:
         - Version: "2012-10-17"
           Statement:
-            - &acessoATabela
-              Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:PutItem
-                - dynamodb:UpdateItem
-                - dynamodb:DeleteItem
-                - dynamodb:Query
-                - dynamodb:TransactWriteItems
-                - dynamodb:TransactGetItems
+            # Permissões específicas por função: esta só registra comandos e cria
+            # pedidos. Não lê, não apaga, não transaciona — quem faz isso é o
+            # worker. Permissão que a função não usa é superfície de ataque à toa.
+            - Effect: Allow
+              Action: dynamodb:PutItem
               Resource:
-                - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-                - !Sub
-                  - "${Arn}/index/*"
-                  - Arn:
-                      Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+                Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
             - &leituraDosSegredos
               Effect: Allow
               Action:
@@ -105,6 +74,7 @@ Resources:
                 - ssm:GetParameter
                 - ssm:GetParameters
               Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/*"
+            # SecureString usa a chave gerenciada do SSM; sem isto a decifragem falha.
             - &decifrarSegredos
               Effect: Allow
               Action: kms:Decrypt
@@ -145,7 +115,21 @@ Resources:
       Policies:
         - Version: "2012-10-17"
           Statement:
-            - *acessoATabela
+            # O worker é quem lê e transaciona: pedido, ciclo, partes, tentativas.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+                - dynamodb:TransactWriteItems
+                - dynamodb:TransactGetItems
+              Resource:
+                - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+                - !Sub
+                  - "${Arn}/index/*"
+                  - Arn:
+                      Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
             - *leituraDosSegredos
             - *decifrarSegredos
 

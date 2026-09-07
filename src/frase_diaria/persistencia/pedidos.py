@@ -1,10 +1,13 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
+from frase_diaria.aplicacao.diagnostico import erro_sanitizado
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
+from frase_diaria.dominio.tempo import em_utc
 
 
 @dataclass(frozen=True)
@@ -15,7 +18,7 @@ class RepositorioDePedidosDynamo:
 
     - `sk = "pedido"` — o estado corrente
     - `sk = "parte#NNN"` — uma parte confirmada, com o texto enviado
-    - `sk = "tentativa#<instante>"` — o histórico de execuções
+    - `sk = "tentativa#<sequencial>"` — o histórico de execuções
 
     Manter partes e tentativas fora do item do pedido é o que impede um item de
     crescer sem limite: o histórico não expira, e o teto de 400 KB do DynamoDB
@@ -23,10 +26,17 @@ class RepositorioDePedidosDynamo:
     """
 
     tabela: Any
+    versao: str = "desenvolvimento"
+    bot_legado: str | None = None
 
-    @staticmethod
-    def _particao(identidade: str) -> str:
-        return f"pedido#{identidade}"
+    def _identidade_legada(self, identidade: str) -> str | None:
+        if self.bot_legado is not None and identidade.startswith(f"extra#{self.bot_legado}#"):
+            return "extra#" + identidade.rsplit("#", 1)[-1]
+        return None
+
+    def chave_do_pedido(self, identidade: str) -> str:
+        """Chave compartilhada pelas escritas transacionais e pelo repositório."""
+        return f"pedido#{self._identidade_legada(identidade) or identidade}"
 
     def criar_se_ausente(self, pedido: Pedido, instante: datetime) -> bool:
         """Cria o pedido. Devolve False se a identidade já existia.
@@ -37,13 +47,26 @@ class RepositorioDePedidosDynamo:
         try:
             self.tabela.put_item(
                 Item={
-                    "pk": self._particao(pedido.identidade),
+                    "pk": self.chave_do_pedido(pedido.identidade),
                     "sk": "pedido",
-                    "identidade": pedido.identidade,
+                    "identidade": self._identidade_legada(pedido.identidade) or pedido.identidade,
+                    "identidade_atual": pedido.identidade,
                     "origem": pedido.origem.value,
                     "chat_id": pedido.chat_id,
-                    "estado": pedido.estado.value,
-                    "criado_em": instante.isoformat(),
+                    "estado": pedido.estado_legado,
+                    "estado_atual": pedido.estado.value,
+                    "motivo_do_estado": pedido.motivo_do_estado,
+                    "criado_em": em_utc(instante).isoformat(timespec="microseconds"),
+                    **(
+                        {}
+                        if pedido.estado.terminal
+                        else {
+                            "pendencia": "pedidos",
+                            "processar_em": em_utc(pedido.proxima_tentativa or instante).isoformat(
+                                timespec="microseconds"
+                            ),
+                        }
+                    ),
                 },
                 ConditionExpression="attribute_not_exists(pk)",
             )
@@ -52,18 +75,31 @@ class RepositorioDePedidosDynamo:
         return True
 
     def obter(self, identidade: str) -> Pedido | None:
-        item = self.tabela.get_item(Key={"pk": self._particao(identidade), "sk": "pedido"}).get(
-            "Item"
-        )
+        item = self.tabela.get_item(
+            Key={"pk": self.chave_do_pedido(identidade), "sk": "pedido"},
+            ConsistentRead=True,
+        ).get("Item")
         if item is None:
             return None
-        return Pedido(
-            identidade=str(item["identidade"]),
+        pedido = Pedido(
+            identidade=str(item.get("identidade_atual", item["identidade"])),
             origem=Origem(item["origem"]),
             chat_id=int(item["chat_id"]),
-            estado=EstadoDoPedido(item["estado"]),
+            estado=EstadoDoPedido(item.get("estado_atual", item["estado"])),
             frase_reservada=item.get("frase_reservada") or None,
+            motivo_do_estado=str(item.get("motivo_do_estado") or "estado legado"),
+            proxima_tentativa=(
+                em_utc(datetime.fromisoformat(item["processar_em"]))
+                if item.get("processar_em")
+                else None
+            ),
         )
+        # Uma versão antiga pode avançar o estado sem conhecer estado_atual.
+        if pedido.estado_legado != item["estado"]:
+            pedido = replace(
+                pedido, estado=EstadoDoPedido(item["estado"]), motivo_do_estado="estado legado"
+            )
+        return pedido
 
     def salvar(self, pedido: Pedido) -> None:
         """Atualiza um pedido existente.
@@ -71,20 +107,64 @@ class RepositorioDePedidosDynamo:
         A condição impede o upsert que o `update_item` faria por padrão: salvar o
         estado de um pedido nunca criado o inventaria na tabela.
         """
+        valores: dict[str, Any] = {
+            ":e": pedido.estado_legado,
+            ":atual": pedido.estado.value,
+            ":m": pedido.motivo_do_estado,
+            ":f": pedido.frase_reservada or "",
+            ":i": self._identidade_legada(pedido.identidade) or pedido.identidade,
+            ":identidade_atual": pedido.identidade,
+            ":o": pedido.origem.value,
+            ":c": pedido.chat_id,
+        }
+        expressao = (
+            "SET estado = :e, estado_atual = :atual, motivo_do_estado = :m, frase_reservada = :f, "
+            "identidade_atual = :identidade_atual, "
+            "identidade = :i, origem = :o, chat_id = :c"
+        )
+        if pedido.estado.terminal:
+            expressao += " REMOVE pendencia, processar_em"
+        else:
+            valores[":p"] = "pedidos"
+            expressao += ", pendencia = :p"
+            if pedido.proxima_tentativa is not None:
+                valores[":t"] = em_utc(pedido.proxima_tentativa).isoformat(timespec="microseconds")
+                expressao += ", processar_em = :t"
+            else:
+                expressao += ", processar_em = if_not_exists(processar_em, criado_em)"
+        terminais = [estado for estado in EstadoDoPedido if estado.terminal]
+        for indice, estado in enumerate(terminais):
+            valores[f":terminal{indice}"] = estado.value
+        condicao = (
+            "attribute_exists(pk) AND NOT estado IN ("
+            + ", ".join(f":terminal{i}" for i in range(len(terminais)))
+            + ")"
+        )
         self.tabela.update_item(
-            Key={"pk": self._particao(pedido.identidade), "sk": "pedido"},
-            UpdateExpression=(
-                "SET estado = :e, frase_reservada = :f, "
-                "identidade = :i, origem = :o, chat_id = :c"
-            ),
-            ExpressionAttributeValues={
-                ":e": pedido.estado.value,
-                ":f": pedido.frase_reservada or "",
-                ":i": pedido.identidade,
-                ":o": pedido.origem.value,
-                ":c": pedido.chat_id,
-            },
-            ConditionExpression="attribute_exists(pk)",
+            Key={"pk": self.chave_do_pedido(pedido.identidade), "sk": "pedido"},
+            UpdateExpression=expressao,
+            ExpressionAttributeValues=valores,
+            ConditionExpression=condicao,
+        )
+
+    def registrar_intencao_parte(
+        self, pedido: str, indice: int, texto: str, instante: datetime
+    ) -> None:
+        """Registra a intenção de enviar uma parte antes do envio externo.
+
+        A intenção é um rastro operacional: se o processo cair antes da confirmação,
+        as próximas leituras podem distinguir "nunca confirmado" de "confirmado".
+        """
+        self.tabela.put_item(
+            Item={
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"parte#{indice:03d}",
+                "indice": indice,
+                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "texto": texto,
+                "estado": "intencao",
+                "intencao_em": em_utc(instante).isoformat(timespec="microseconds"),
+            }
         )
 
     def confirmar_parte(
@@ -97,32 +177,140 @@ class RepositorioDePedidosDynamo:
         """
         self.tabela.put_item(
             Item={
-                "pk": self._particao(pedido),
+                "pk": self.chave_do_pedido(pedido),
                 "sk": f"parte#{indice:03d}",
                 "indice": indice,
+                "identidade": Pedido.identidade_de_parte(pedido, indice),
                 "texto": texto,
                 "message_id": message_id,
-                "confirmada_em": instante.isoformat(),
+                "estado": "confirmada",
+                "confirmada_em": em_utc(instante).isoformat(timespec="microseconds"),
+            }
+        )
+
+    def marcar_parte_incerta(
+        self, pedido: str, indice: int, motivo: str, instante: datetime
+    ) -> None:
+        """Marca a parte como incerta para suspender reenvio automático.
+
+        A parte pode ter sido entregue do ponto de vista do Telegram, mas a
+        confirmação durável ainda não foi persistida. Em vez de duplicar,
+        registramos o estado incerto e evitamos reenvio automático.
+        """
+        self.tabela.put_item(
+            Item={
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"parte#{indice:03d}",
+                "indice": indice,
+                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "estado": "incerto",
+                "motivo": motivo,
+                "incerta_em": em_utc(instante).isoformat(timespec="microseconds"),
             }
         )
 
     def indices_confirmados(self, pedido: str) -> set[int]:
-        resposta = self.tabela.query(
-            KeyConditionExpression=Key("pk").eq(self._particao(pedido))
-            & Key("sk").begins_with("parte#"),
-            ProjectionExpression="indice",
-        )
-        return {int(item["indice"]) for item in resposta.get("Items", [])}
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") != "incerto"
+            and item.get("estado") != "intencao"
+            and item.get("message_id") not in (None, 0)
+        }
+
+    def indices_incertos(self, pedido: str) -> set[int]:
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") == "incerto"
+        }
+
+    def indices_intencoes(self, pedido: str) -> set[int]:
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") == "intencao"
+        }
+
+    def buscar_vencidos(self, instante: datetime) -> list[Pedido]:
+        """Consulta somente pendências; revalida o índice eventualmente consistente."""
+        agora = em_utc(instante)
+        argumentos: dict[str, Any] = {
+            "IndexName": "pendencias",
+            "KeyConditionExpression": Key("pendencia").eq("pedidos")
+            & Key("processar_em").lte(agora.isoformat(timespec="microseconds")),
+        }
+        pedidos: list[Pedido] = []
+        while True:
+            resposta = self.tabela.query(**argumentos)
+            for item in resposta.get("Items", []):
+                pedido = self.obter(str(item["pk"]).removeprefix("pedido#"))
+                if (
+                    pedido is not None
+                    and not pedido.estado.terminal
+                    and pedido.proxima_tentativa is not None
+                    and pedido.proxima_tentativa <= agora
+                ):
+                    pedidos.append(pedido)
+            if not resposta.get("LastEvaluatedKey"):
+                return pedidos
+            argumentos["ExclusiveStartKey"] = resposta["LastEvaluatedKey"]
 
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: datetime
-    ) -> None:
+    ) -> int:
+        ocorrida_em = em_utc(instante).isoformat(timespec="microseconds")
+        contador = self.tabela.update_item(
+            Key={"pk": self.chave_do_pedido(pedido), "sk": "sequencia-de-tentativas"},
+            UpdateExpression="ADD sequencial :um",
+            ExpressionAttributeValues={":um": 1},
+            ReturnValues="UPDATED_NEW",
+        )
+        sequencial = int(contador["Attributes"]["sequencial"])
         self.tabela.put_item(
             Item={
-                "pk": self._particao(pedido),
-                "sk": f"tentativa#{instante.isoformat()}",
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"tentativa#{sequencial:020d}",
+                "identidade": Pedido.identidade_de_tentativa(pedido, sequencial),
+                "sequencial": sequencial,
                 "resultado": resultado,
-                "erro": erro or "",
-                "ocorrida_em": instante.isoformat(),
-            }
+                "erro": erro_sanitizado(erro),
+                "ocorrida_em": ocorrida_em,
+                "versao": self.versao,
+                "correlacao": uuid4().hex,
+            },
+            ConditionExpression="attribute_not_exists(pk)",
         )
+        return sequencial
+
+    def finalizar_tentativa(
+        self, pedido: str, sequencial: int, resultado: str, erro: str | None, instante: datetime
+    ) -> None:
+        self.tabela.update_item(
+            Key={"pk": self.chave_do_pedido(pedido), "sk": f"tentativa#{sequencial:020d}"},
+            UpdateExpression="SET resultado = :r, erro = :e, finalizada_em = :t",
+            ExpressionAttributeValues={
+                ":r": resultado,
+                ":e": erro_sanitizado(erro),
+                ":t": em_utc(instante).isoformat(timespec="microseconds"),
+            },
+            ConditionExpression="attribute_exists(pk)",
+        )
+
+    def listar_tentativas(self, pedido: str) -> list[dict[str, Any]]:
+        """Recupera o histórico, incluindo tentativas anteriores ao ticket 07."""
+        return self._listar_itens(pedido, "tentativa#")
+
+    def _listar_itens(self, pedido: str, prefixo: str) -> list[dict[str, Any]]:
+        argumentos: dict[str, Any] = {
+            "KeyConditionExpression": Key("pk").eq(self.chave_do_pedido(pedido))
+            & Key("sk").begins_with(prefixo),
+            "ConsistentRead": True,
+        }
+        itens: list[dict[str, Any]] = []
+        while True:
+            resposta = self.tabela.query(**argumentos)
+            itens.extend(resposta.get("Items", []))
+            if not resposta.get("LastEvaluatedKey"):
+                return itens
+            argumentos["ExclusiveStartKey"] = resposta["LastEvaluatedKey"]

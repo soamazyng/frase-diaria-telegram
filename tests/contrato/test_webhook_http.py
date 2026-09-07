@@ -23,6 +23,9 @@ class CasoFalso:
         self.desfecho = desfecho
         self.chamadas: list[tuple[str | None, dict[str, Any]]] = []
 
+    def aceita_segredo(self, segredo: str | None) -> bool:
+        return segredo == SEGREDO
+
     def executar(self, segredo: str | None, corpo: dict[str, Any]) -> Desfecho:
         self.chamadas.append((segredo, corpo))
         return self.desfecho
@@ -57,12 +60,14 @@ def test_repassa_o_cabecalho_de_segredo_ao_caso_de_uso() -> None:
     assert caso.chamadas[0][0] == SEGREDO
 
 
-def test_ausencia_do_cabecalho_chega_como_none() -> None:
+def test_sem_o_cabecalho_o_caso_de_uso_nem_e_chamado() -> None:
+    # Recusar no cabeçalho evita que o formato do corpo influencie a resposta.
     caso = CasoFalso(Desfecho.IGNORADO)
 
-    _cliente(caso).post("/telegram/webhook", json={"update_id": 1})
+    resposta = _cliente(caso).post("/telegram/webhook", json={"update_id": 1})
 
-    assert caso.chamadas[0][0] is None
+    assert resposta.status_code == 200
+    assert caso.chamadas == []
 
 
 def test_corpo_invalido_responde_200_sem_chamar_o_caso_de_uso() -> None:
@@ -81,6 +86,7 @@ def test_a_resposta_nao_revela_o_motivo_da_recusa() -> None:
     resposta = _cliente(CasoFalso(Desfecho.IGNORADO)).post(
         "/telegram/webhook", json={"update_id": 1}, headers={CABECALHO: "errado"}
     )
+    assert resposta.status_code == 200
 
     corpo = resposta.text.lower()
     for pista in ("segredo", "chat", "autoriz", "privad"):

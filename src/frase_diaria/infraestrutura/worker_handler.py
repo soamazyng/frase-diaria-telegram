@@ -25,7 +25,7 @@ def handler(evento: dict[str, Any], contexto: Any = None) -> dict[str, Any]:
         # Levantar, e não devolver sucesso: a invocação assíncrona só é
         # reentregue se o handler falhar. Devolver sucesso aqui transformaria um
         # atraso de propagação numa frase nunca entregue.
-        raise RuntimeError(f"pedido {identidade} não encontrado")
+        raise RuntimeError("pedido não encontrado")
 
-    _log.info("pedido %s terminou em %s", identidade, pedido.estado.value)
+    _log.info("pedido terminou em %s", pedido.estado.value)
     return {"processado": True, "estado": pedido.estado.value}

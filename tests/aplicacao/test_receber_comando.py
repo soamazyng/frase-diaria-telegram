@@ -209,9 +209,9 @@ def test_frase_cria_pedido_extra_e_acorda_o_worker() -> None:
     )
 
     assert desfecho is Desfecho.ACEITO
-    assert pedidos.criados[0].identidade == "extra#77"
+    assert pedidos.criados[0].identidade == "extra#principal#77"
     assert pedidos.criados[0].chat_id == CHAT
-    assert despachante.acordados == ["extra#77"]
+    assert despachante.acordados == ["extra#principal#77"]
 
 
 def test_frase_nao_responde_no_webhook() -> None:
@@ -225,14 +225,20 @@ def test_frase_nao_responde_no_webhook() -> None:
     assert canal.enviados == []
 
 
-def test_frase_ja_conhecida_nao_acorda_o_worker_de_novo() -> None:
+def test_frase_ja_conhecida_acorda_o_worker_de_novo() -> None:
+    """Acordar é idempotente, e pular o despacho perderia o pedido.
+
+    Se a primeira entrega criou o pedido e morreu antes de acordar o worker, a
+    reentrega é a única chance de despachá-lo — e ela chega justamente com o
+    pedido "já existente".
+    """
     pedidos, despachante = PedidosEspiao(ja_existe=True), DespachanteEspiao()
 
     _caso_com_pedidos(pedidos, despachante).executar(
         segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
     )
 
-    assert despachante.acordados == []
+    assert despachante.acordados == ["extra#principal#77"]
 
 
 def test_falha_ao_acordar_o_worker_nao_derruba_o_webhook() -> None:
@@ -290,3 +296,46 @@ def test_reentrega_de_frase_ja_registrada_ainda_garante_o_pedido() -> None:
 
     assert segundo is Desfecho.JA_CONHECIDO
     assert len(pedidos.criados) == 2
+
+
+class CanalQueFalha:
+    def enviar_texto(self, chat_id: int, texto: str) -> int:
+        raise RuntimeError("Telegram fora do ar")
+
+
+def test_falha_ao_enviar_a_ajuda_nao_vira_erro_http() -> None:
+    """5xx só quando reentregar tem chance de dar certo (rules.md).
+
+    A reentrega encontraria o comando já registrado, devolveria sucesso sem
+    responder, e a ajuda nunca chegaria. Como repetir `/start` é trivial e não
+    consome frase, registrar a falha e responder 200 é o desfecho honesto.
+    """
+    desfecho = _caso(canal=CanalQueFalha()).executar(segredo=SEGREDO, corpo=_mensagem("/start"))
+
+    assert desfecho is Desfecho.ACEITO
+
+
+def test_update_irrelevante_sem_segredo_nao_e_reconhecido() -> None:
+    """A spec fala em "atualizações irrelevantes **já validadas**" (4.7).
+
+    Decidir que algo é irrelevante antes de conferir o segredo daria a qualquer
+    origem uma resposta 200 e uma linha de log.
+    """
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+
+    desfecho = _caso(repositorio, canal).executar(
+        segredo="errado", corpo={"update_id": 3, "poll": {}}
+    )
+
+    assert desfecho is Desfecho.IGNORADO
+    assert repositorio.registrados == []
+
+
+def test_status_recebe_a_ajuda_enquanto_o_ticket_15_nao_chega() -> None:
+    # Um comando documentado que não responde nada faz o bot parecer quebrado.
+    canal = CanalEspiao()
+
+    _caso(canal=canal).executar(segredo=SEGREDO, corpo=_mensagem("/status"))
+
+    assert len(canal.enviados) == 1
+    assert "em construção" in canal.enviados[0][1]

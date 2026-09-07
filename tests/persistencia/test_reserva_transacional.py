@@ -57,7 +57,7 @@ def test_efetivar_grava_ciclo_e_pedido(contexto: Any) -> None:
     gravado = contexto["pedidos"].obter("extra#42")
     assert gravado is not None
     assert gravado.frase_reservada == "f1"
-    assert gravado.estado is EstadoDoPedido.ENVIANDO
+    assert gravado.estado is EstadoDoPedido.RESERVADO
 
 
 def test_pedido_inexistente_impede_a_reserva_inteira(contexto: Any) -> None:

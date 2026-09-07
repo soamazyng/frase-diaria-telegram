@@ -4,8 +4,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from frase_diaria.aplicacao.portas import Relogio
-from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
+from frase_diaria.aplicacao.portas import CriadorDePedidos, Relogio
+from frase_diaria.dominio.autorizacao import PoliticaDeAcesso, Recusa
 from frase_diaria.dominio.comando import Comando
 from frase_diaria.dominio.pedido import Origem, Pedido
 from frase_diaria.telegram.atualizacao import Atualizacao, interpretar
@@ -15,7 +15,7 @@ _log = logging.getLogger(__name__)
 AJUDA = (
     "Eu envio uma frase por dia às 08:00.\n\n"
     "/frase — uma frase extra agora\n"
-    "/status — como está a operação"
+    "/status — como está a operação (em construção)"
 )
 
 
@@ -38,10 +38,6 @@ class CanalDeTelegram(Protocol):
     def enviar_texto(self, chat_id: int, texto: str) -> int: ...
 
 
-class RepositorioDePedidos(Protocol):
-    def criar_se_ausente(self, pedido: Pedido, instante: datetime) -> bool: ...
-
-
 class Despachante(Protocol):
     def acordar(self, identidade: str) -> None:
         """Tenta pôr o worker para trabalhar agora."""
@@ -61,17 +57,29 @@ class ReceberComando:
     repositorio: RepositorioDeComandos
     canal: CanalDeTelegram
     relogio: Relogio
-    pedidos: RepositorioDePedidos
+    pedidos: CriadorDePedidos
     despachante: Despachante
+    bot: str = "principal"
+
+    def aceita_segredo(self, segredo: str | None) -> bool:
+        """Permite à fronteira HTTP recusar antes mesmo de ler o corpo."""
+        return self.politica.conferir_segredo(segredo) is None
 
     def executar(self, segredo: str | None, corpo: dict[str, Any]) -> Desfecho:
+        # O segredo primeiro, antes de qualquer leitura do corpo: decidir que um
+        # update é irrelevante antes disso daria a qualquer origem uma resposta
+        # 200 e uma linha de log.
+        if self.politica.conferir_segredo(segredo) is not None:
+            _log.warning("entrada recusada: %s", Recusa.SEGREDO_INVALIDO.value)
+            return Desfecho.IGNORADO
+
         atualizacao = interpretar(corpo)
         if atualizacao is None:
             # Não é mensagem de conversa. Reconhecer e ignorar: devolver erro
             # faria o Telegram reentregar para sempre algo que nunca interessa.
             return Desfecho.IGNORADO
 
-        recusa = self.politica.avaliar(segredo=segredo, conversa=atualizacao.conversa)
+        recusa = self.politica.conferir_conversa(atualizacao.conversa)
         if recusa is not None:
             # Sem resposta e sem pedido. O motivo fica no log, nunca na resposta.
             _log.warning("entrada recusada: %s", recusa.value)
@@ -99,10 +107,21 @@ class ReceberComando:
         if not novo:
             return Desfecho.JA_CONHECIDO
 
-        if atualizacao.comando in (Comando.START, Comando.DESCONHECIDO):
-            self.canal.enviar_texto(atualizacao.conversa.chat_id, AJUDA)
-
+        self._responder_ajuda(atualizacao.conversa.chat_id)
         return Desfecho.ACEITO
+
+    def _responder_ajuda(self, chat_id: int) -> None:
+        """Envia a ajuda em melhor esforço.
+
+        Falhar aqui não vira 5xx: a reentrega encontraria o comando já
+        registrado, devolveria sucesso sem responder, e a usuária nunca receberia
+        nada. Como repetir `/start` é trivial e não consome frase, registrar a
+        falha e devolver 200 é melhor que uma reentrega que não pode dar certo.
+        """
+        try:
+            self.canal.enviar_texto(chat_id, AJUDA)
+        except Exception:
+            _log.exception("falha ao enviar a ajuda; a usuária pode repetir o comando")
 
     def _pedir_frase(self, update_id: int, chat_id: int) -> None:
         """Cria o pedido extra e tenta acordar o worker.
@@ -112,15 +131,16 @@ class ReceberComando:
         depois da resposta HTTP, que a spec descarta.
         """
         pedido = Pedido(
-            identidade=Pedido.identidade_de_extra(update_id),
+            identidade=Pedido.identidade_de_extra(self.bot, update_id),
             origem=Origem.EXTRA,
             chat_id=chat_id,
         )
-        if not self.pedidos.criar_se_ausente(pedido, self.relogio.agora()):
-            return
+        self.pedidos.criar_se_ausente(pedido, self.relogio.agora())
+        # Acordar mesmo quando o pedido já existia: a execução anterior pode ter
+        # criado o pedido e morrido antes do despacho, e o worker é idempotente.
         try:
             self.despachante.acordar(pedido.identidade)
         except Exception:
             # O pedido está persistido; o reconciliador o alcançará. Falhar aqui
             # faria o Telegram reentregar um comando já registrado.
-            _log.exception("falha ao acordar o worker para %s", pedido.identidade)
+            _log.error("falha ao acordar o worker; pedido permanece persistido")

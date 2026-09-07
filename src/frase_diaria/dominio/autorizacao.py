@@ -31,16 +31,30 @@ class PoliticaDeAcesso:
     segredo_esperado: str
     chat_id_autorizado: int
 
-    def avaliar(self, segredo: str | None, conversa: Conversa) -> Recusa | None:
-        """Devolve o motivo da recusa, ou None quando a entrada é aceita.
+    def conferir_segredo(self, segredo: str | None) -> Recusa | None:
+        """Confere apenas o cabeçalho, sem olhar o corpo da requisição.
 
-        A ordem é deliberada: o segredo primeiro, para que quem não o tenha não
-        consiga descobrir qual conversa é a autorizada comparando respostas.
+        Existe separado para poder ser chamado **antes** de interpretar o corpo:
+        a spec (4.7) fala em reconhecer "atualizações irrelevantes já validadas",
+        e decidir que algo é irrelevante antes de conferir o segredo daria a
+        qualquer origem uma resposta 200 e uma linha de log.
         """
         if segredo is None or not hmac.compare_digest(segredo, self.segredo_esperado):
             return Recusa.SEGREDO_INVALIDO
+        return None
+
+    def conferir_conversa(self, conversa: Conversa) -> Recusa | None:
+        """Confere origem e destinatário. Só faz sentido após o segredo passar."""
         if conversa.tipo != "private":
             return Recusa.CONVERSA_NAO_PRIVADA
         if conversa.chat_id != self.chat_id_autorizado:
             return Recusa.CHAT_NAO_AUTORIZADO
         return None
+
+    def avaliar(self, segredo: str | None, conversa: Conversa) -> Recusa | None:
+        """As duas conferências em ordem: segredo primeiro, sempre.
+
+        Quem não tem o segredo não pode descobrir qual conversa é a autorizada
+        comparando respostas.
+        """
+        return self.conferir_segredo(segredo) or self.conferir_conversa(conversa)

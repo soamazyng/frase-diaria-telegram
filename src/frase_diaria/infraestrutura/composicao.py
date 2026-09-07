@@ -11,7 +11,7 @@ from typing import Any
 import boto3
 
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
-from frase_diaria.aplicacao.receber_comando import ReceberComando
+from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
 from frase_diaria.infraestrutura.colecao_fixture import ColecaoFixture
 from frase_diaria.infraestrutura.despachante import DespachanteLambda
@@ -35,13 +35,20 @@ def segredos() -> dict[str, str]:
     quentes seguem com o valor antigo.
     """
     cliente = boto3.client("ssm")
-    pagina = cliente.get_parameters_by_path(
+    # Paginado: `get_parameters_by_path` devolve no máximo 10 por chamada, e uma
+    # leitura de página única passaria a faltar segredos silenciosamente quando o
+    # projeto crescer (o token do Notion chega no ticket 10).
+    paginas = cliente.get_paginator("get_parameters_by_path").paginate(
         Path=PREFIXO_DOS_PARAMETROS, WithDecryption=True, Recursive=False
     )
-    return {p["Name"].rsplit("/", 1)[-1]: p["Value"] for p in pagina["Parameters"]}
+    return {
+        p["Name"].rsplit("/", 1)[-1]: p["Value"] for pagina in paginas for p in pagina["Parameters"]
+    }
 
 
+@lru_cache(maxsize=1)
 def _tabela() -> Any:
+    """Um recurso por container: construir um `boto3.resource` custa tempo."""
     return boto3.resource("dynamodb").Table(os.environ["TABELA_ESTADO"])
 
 
@@ -56,7 +63,10 @@ def montar_receber_comando() -> ReceberComando:
         repositorio=RepositorioDeComandosDynamo(tabela=_tabela()),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         relogio=RelogioDoSistema(),
-        pedidos=RepositorioDePedidosDynamo(tabela=_tabela()),
+        pedidos=RepositorioDePedidosDynamo(
+            tabela=_tabela(), bot_legado=guardados["telegram-bot-legado-id"]
+        ),
+        bot=guardados["telegram-bot-token"].split(":", 1)[0],
         despachante=DespachanteLambda(
             nome_da_funcao=os.environ["FUNCAO_WORKER"],
             cliente=boto3.client("lambda"),
@@ -72,11 +82,37 @@ def montar_processar_pedido() -> ProcessarPedido:
     """
     guardados = segredos()
     return ProcessarPedido(
-        repositorio=RepositorioDePedidosDynamo(tabela=_tabela()),
+        repositorio=RepositorioDePedidosDynamo(
+            tabela=_tabela(),
+            versao=os.environ["VERSAO_DA_APLICACAO"],
+            bot_legado=guardados["telegram-bot-legado-id"],
+        ),
         fonte=ColecaoFixture(),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         sorteio=SorteioAleatorio(),
         relogio=RelogioDoSistema(),
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
-        reserva=ReservaTransacional(tabela=_tabela()),
+        reserva=ReservaTransacional(
+            tabela=_tabela(), bot_legado=guardados["telegram-bot-legado-id"]
+        ),
     )
+
+
+class ReceberComandoPreguicoso:
+    """Adia a montagem do caso de uso até a primeira requisição do webhook.
+
+    Montar no import faria `GET /health` depender do SSM: um parâmetro ausente ou
+    o serviço indisponível derrubariam também o diagnóstico, e a verificação
+    pós-publicação do pipeline reprovaria por dependência em vez de por saúde —
+    justamente o contrário do que ela existe para medir.
+    """
+
+    @lru_cache(maxsize=1)  # noqa: B019
+    def _caso(self) -> ReceberComando:
+        return montar_receber_comando()
+
+    def aceita_segredo(self, segredo: str | None) -> bool:
+        return self._caso().aceita_segredo(segredo)
+
+    def executar(self, segredo: str | None, corpo: dict[str, Any]) -> Desfecho:
+        return self._caso().executar(segredo, corpo)

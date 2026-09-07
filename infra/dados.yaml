@@ -21,10 +21,17 @@ Resources:
       TableName: !Sub "${Prefixo}-estado"
       # On-demand: sem capacidade provisionada, sem custo fixo.
       BillingMode: PAY_PER_REQUEST
+      # Retain protege o caminho CloudFormation; isto protege o caminho direto.
+      # Sem os dois, um DeleteTable avulso apaga o histórico de entregas.
+      DeletionProtectionEnabled: true
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
         - AttributeName: sk
+          AttributeType: S
+        - AttributeName: pendencia
+          AttributeType: S
+        - AttributeName: processar_em
           AttributeType: S
       KeySchema:
         - AttributeName: pk
@@ -33,6 +40,15 @@ Resources:
           KeyType: RANGE
       SSESpecification:
         SSEEnabled: true
+      GlobalSecondaryIndexes:
+        - IndexName: pendencias
+          KeySchema:
+            - AttributeName: pendencia
+              KeyType: HASH
+            - AttributeName: processar_em
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       Tags:

@@ -3,12 +3,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from frase_diaria.aplicacao.diagnostico import erro_sanitizado
 from frase_diaria.aplicacao.portas import Relogio, Sorteio
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
-from frase_diaria.dominio.pedido import Pedido
+from frase_diaria.dominio.pedido import EstadoDoPedido, Pedido
 from frase_diaria.dominio.selecao import SemFrase, selecionar
-from frase_diaria.telegram.canal import ErroDoTelegram
+from frase_diaria.telegram.canal import MESSAGE_ID_DESCONHECIDO, ErroDoTelegram
 
 _log = logging.getLogger(__name__)
 
@@ -16,12 +17,23 @@ _log = logging.getLogger(__name__)
 class RepositorioDePedidos(Protocol):
     def obter(self, identidade: str) -> Pedido | None: ...
     def salvar(self, pedido: Pedido) -> None: ...
+    def registrar_intencao_parte(
+        self, pedido: str, indice: int, texto: str, instante: datetime
+    ) -> None: ...
     def confirmar_parte(
         self, pedido: str, indice: int, texto: str, message_id: int, instante: datetime
     ) -> None: ...
+    def marcar_parte_incerta(
+        self, pedido: str, indice: int, motivo: str, instante: datetime
+    ) -> None: ...
     def indices_confirmados(self, pedido: str) -> set[int]: ...
+    def indices_incertos(self, pedido: str) -> set[int]: ...
+    def indices_intencoes(self, pedido: str) -> set[int]: ...
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: datetime
+    ) -> int: ...
+    def finalizar_tentativa(
+        self, pedido: str, sequencial: int, resultado: str, erro: str | None, instante: datetime
     ) -> None: ...
 
 
@@ -74,12 +86,43 @@ class ProcessarPedido:
     def executar(self, identidade: str) -> Pedido | None:
         pedido = self.repositorio.obter(identidade)
         if pedido is None:
-            _log.warning("pedido %s não encontrado", identidade)
+            _log.warning("pedido não encontrado")
             return None
         if pedido.estado.terminal:
             # Estado terminal não reabre: um disparo duplicado não reenvia.
             return pedido
+        if pedido.proxima_tentativa is not None and pedido.proxima_tentativa > self.relogio.agora():
+            return pedido
 
+        sequencial = self.repositorio.registrar_tentativa(
+            pedido.identidade, "iniciada", None, self.relogio.agora()
+        )
+        try:
+            resultado = self._processar(pedido)
+        except ReservaPendente:
+            self.repositorio.finalizar_tentativa(
+                pedido.identidade,
+                sequencial,
+                "aguardando",
+                "todas as frases reservadas",
+                self.relogio.agora(),
+            )
+            raise
+        except Exception:
+            self.repositorio.finalizar_tentativa(
+                pedido.identidade, sequencial, "erro", "erro de integração", self.relogio.agora()
+            )
+            raise RuntimeError("processamento interrompido; consultar tentativa") from None
+        self.repositorio.finalizar_tentativa(
+            pedido.identidade,
+            sequencial,
+            resultado.estado.value,
+            None if resultado.estado is EstadoDoPedido.ENVIADO else resultado.motivo_do_estado,
+            self.relogio.agora(),
+        )
+        return resultado
+
+    def _processar(self, pedido: Pedido) -> Pedido:
         ciclo = self.ciclos.carregar()
         escolha = self._escolher(pedido, ciclo)
 
@@ -87,10 +130,8 @@ class ProcessarPedido:
             # Transitório: outro pedido segura a última frase livre. Encerrar
             # aqui levaria o pedido a estado terminal, de onde nem a retomada nem
             # a janela de recuperação o tirariam.
-            self.repositorio.registrar_tentativa(
-                identidade, "aguardando", "todas as frases reservadas", self.relogio.agora()
-            )
-            raise ReservaPendente(f"sem frase livre para {identidade}; tentar de novo")
+            self.repositorio.salvar(pedido.aguardar_tentativa("todas as frases reservadas"))
+            raise ReservaPendente("sem frase livre; tentar de novo")
         if escolha is SemFrase.COLECAO_VAZIA:
             return self._encerrar_sem_conteudo(pedido, ciclo)
 
@@ -101,6 +142,9 @@ class ProcessarPedido:
             pedido = pedido.reservar(frase.identidade)
             self.reserva.efetivar(pedido, ciclo)
 
+        if pedido.estado is not EstadoDoPedido.ENVIANDO:
+            pedido = pedido.iniciar_envio()
+            self.repositorio.salvar(pedido)
         return self._entregar(pedido, frase, ciclo)
 
     def _escolher(self, pedido: Pedido, ciclo: Ciclo) -> tuple[Frase, Ciclo] | SemFrase:
@@ -130,21 +174,19 @@ class ProcessarPedido:
         invariante: quem já entregou alguma parte mantém a frase consumida, ainda
         que ela tenha desaparecido da fonte.
         """
-        agora = self.relogio.agora()
         ja_entregou = bool(self.repositorio.indices_confirmados(pedido.identidade))
         motivo = (
             "frase reservada não está mais na coleção"
             if pedido.frase_reservada is not None
             else "coleção sem frases elegíveis"
         )
-        encerrado = pedido.falhar(alguma_parte_enviada=ja_entregou)
+        encerrado = pedido.falhar(alguma_parte_enviada=ja_entregou, motivo=motivo)
         # Pedido primeiro: um crash depois disto deixa o ciclo desatualizado, que
         # é recuperável; a ordem inversa deixaria o pedido reivindicando uma
         # reserva que o ciclo já soltou, e a retomada reentregaria a frase.
         self.repositorio.salvar(encerrado)
         if pedido.frase_reservada is not None:
             self._encerrar_no_ciclo(ciclo, pedido.frase_reservada, ja_entregou)
-        self.repositorio.registrar_tentativa(pedido.identidade, "falhou", motivo, agora)
         return encerrado
 
     def _encerrar_no_ciclo(self, ciclo: Ciclo, frase: str, alguma_enviada: bool) -> None:
@@ -171,31 +213,40 @@ class ProcessarPedido:
         if ciclo.foi_consumida(frase):
             return
         if frase not in ciclo.reservadas:
-            _log.warning("ciclo perdeu a reserva de %s; consumindo assim mesmo", frase)
+            _log.warning("ciclo perdeu reserva; consumindo assim mesmo")
             ciclo = ciclo.reservar(frase)
         self.ciclos.salvar(ciclo.consumir(frase, com_ressalva=com_ressalva))
 
     def _entregar(self, pedido: Pedido, frase: Frase, ciclo: Ciclo) -> Pedido:
         ja_confirmadas = self.repositorio.indices_confirmados(pedido.identidade)
+        ja_incertas: set[int] = getattr(self.repositorio, "indices_incertos", lambda *_: set())(
+            pedido.identidade
+        )
         alguma_enviada = bool(ja_confirmadas)
 
         for indice, texto in enumerate(frase.partes):
-            if indice in ja_confirmadas:
+            if indice in ja_confirmadas or indice in ja_incertas:
                 continue
+            indices_intencoes: set[int] = getattr(
+                self.repositorio, "indices_intencoes", lambda *_: set()
+            )(pedido.identidade)
+            if indice in indices_intencoes:
+                motivo = "intenção registrada sem confirmação; reenvio automático suspenso"
+                return self._marcar_incerto(pedido, motivo, alguma_enviada, ciclo)
+            registrar_intencao = getattr(self.repositorio, "registrar_intencao_parte", None)
+            if registrar_intencao is not None:
+                registrar_intencao(pedido.identidade, indice, texto, self.relogio.agora())
             try:
                 message_id = self.canal.enviar_texto(pedido.chat_id, texto)
             except ErroDoTelegram as erro:
                 # A mensagem já vem sanitizada do canal: sem token, sem URL.
                 return self._encerrar_com_falha(pedido, str(erro), alguma_enviada, ciclo)
-            except Exception as erro:
-                # Falha que não é do Telegram: registra o que aconteceu e deixa
-                # subir. Propagar é o que faz a Lambda retentar; engolir deixaria
-                # o pedido preso em ENVIANDO, sem rastro e sem quem o retomasse.
-                _log.exception("erro inesperado ao entregar %s", pedido.identidade)
-                self.repositorio.registrar_tentativa(
-                    pedido.identidade, "erro", repr(erro), self.relogio.agora()
-                )
-                raise
+            if message_id == MESSAGE_ID_DESCONHECIDO:
+                motivo = "Telegram pode ter aceitado a parte, mas não houve confirmação durável"
+                marcar_incerta = getattr(self.repositorio, "marcar_parte_incerta", None)
+                if marcar_incerta is not None:
+                    marcar_incerta(pedido.identidade, indice, motivo, self.relogio.agora())
+                return self._marcar_incerto(pedido, motivo, alguma_enviada, ciclo)
             # Confirmação persistida com o texto efetivamente enviado: o histórico
             # preserva o que chegou, mesmo que a origem mude depois.
             self.repositorio.confirmar_parte(
@@ -207,19 +258,23 @@ class ProcessarPedido:
         self.repositorio.salvar(concluido)
         # Consumo definitivo: todas as partes confirmadas.
         self._consumir_no_ciclo(ciclo, frase.identidade, com_ressalva=False)
-        self.repositorio.registrar_tentativa(
-            pedido.identidade, "enviado", None, self.relogio.agora()
-        )
         return concluido
+
+    def _marcar_incerto(
+        self, pedido: Pedido, motivo: str, alguma_enviada: bool, ciclo: Ciclo
+    ) -> Pedido:
+        incerto = pedido.marcar_incerto(motivo)
+        self.repositorio.salvar(incerto)
+        if pedido.frase_reservada is not None:
+            self._encerrar_no_ciclo(ciclo, pedido.frase_reservada, alguma_enviada)
+        return incerto
 
     def _encerrar_com_falha(
         self, pedido: Pedido, erro: str, alguma_enviada: bool, ciclo: Ciclo
     ) -> Pedido:
-        encerrado = pedido.falhar(alguma_parte_enviada=alguma_enviada)
+        erro = erro_sanitizado(erro)
+        encerrado = pedido.falhar(alguma_parte_enviada=alguma_enviada, motivo=erro)
         self.repositorio.salvar(encerrado)
         if pedido.frase_reservada is not None:
             self._encerrar_no_ciclo(ciclo, pedido.frase_reservada, alguma_enviada)
-        self.repositorio.registrar_tentativa(
-            pedido.identidade, "falhou", erro, self.relogio.agora()
-        )
         return encerrado

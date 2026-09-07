@@ -9,7 +9,7 @@ pós-publicação falha com 404 por roteamento — não por saúde. Nesse caso, 
 
 from mangum import Mangum
 
-from frase_diaria.infraestrutura.composicao import montar_receber_comando
+from frase_diaria.infraestrutura.composicao import ReceberComandoPreguicoso
 from frase_diaria.infraestrutura.http.aplicacao_web import criar_aplicacao
 
-handler = Mangum(criar_aplicacao(receber_comando=montar_receber_comando()))
+handler = Mangum(criar_aplicacao(receber_comando=ReceberComandoPreguicoso()))

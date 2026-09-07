@@ -4,6 +4,7 @@ from typing import Any
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.pedido import Pedido
 from frase_diaria.persistencia.ciclos import RepositorioDeCiclosDynamo
+from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class ReservaTransacional:
     """
 
     tabela: Any
+    bot_legado: str | None = None
 
     def efetivar(self, pedido: Pedido, ciclo: Ciclo) -> None:
         nome = self.tabela.name
@@ -33,13 +35,27 @@ class ReservaTransacional:
                 {
                     "Update": {
                         "TableName": nome,
-                        "Key": {"pk": f"pedido#{pedido.identidade}", "sk": "pedido"},
-                        "UpdateExpression": "SET estado = :e, frase_reservada = :f",
-                        "ExpressionAttributeValues": {
-                            ":e": pedido.estado.value,
-                            ":f": pedido.frase_reservada or "",
+                        "Key": {
+                            "pk": RepositorioDePedidosDynamo(
+                                self.tabela, bot_legado=self.bot_legado
+                            ).chave_do_pedido(pedido.identidade),
+                            "sk": "pedido",
                         },
-                        "ConditionExpression": "attribute_exists(pk)",
+                        "UpdateExpression": (
+                            "SET estado = :e, estado_atual = :atual, "
+                            "frase_reservada = :f, motivo_do_estado = :m"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":e": pedido.estado_legado,
+                            ":atual": pedido.estado.value,
+                            ":f": pedido.frase_reservada or "",
+                            ":m": pedido.motivo_do_estado,
+                            ":pendente": "pendente",
+                            ":aguardando": "aguardando_tentativa",
+                        },
+                        "ConditionExpression": (
+                            "attribute_exists(pk) AND estado IN (:pendente, :aguardando)"
+                        ),
                     }
                 },
             ]

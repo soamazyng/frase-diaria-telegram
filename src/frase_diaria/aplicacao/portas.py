@@ -2,6 +2,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
+from frase_diaria.dominio.pedido import Pedido
+
+
+class CriadorDePedidos(Protocol):
+    def criar_se_ausente(self, pedido: Pedido, instante: datetime) -> bool: ...
+
 
 class Relogio(Protocol):
     """Fonte do tempo. Substituível nos testes para exercitar a janela de envio."""

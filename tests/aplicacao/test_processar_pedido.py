@@ -45,6 +45,8 @@ class RepositorioFalso:
         self.partes: list[dict[str, Any]] = []
         self.tentativas: list[dict[str, Any]] = []
         self.salvos: list[Pedido] = []
+        self.intencoes: list[dict[str, Any]] = []
+        self.incertas: list[dict[str, Any]] = []
 
     def obter(self, identidade: str) -> Pedido | None:
         return self.pedido
@@ -53,18 +55,36 @@ class RepositorioFalso:
         self.pedido = pedido
         self.salvos.append(pedido)
 
+    def registrar_intencao_parte(self, pedido: str, indice: int, texto: str, instante: Any) -> None:
+        self.intencoes.append({"indice": indice, "texto": texto})
+
     def confirmar_parte(
         self, pedido: str, indice: int, texto: str, message_id: int, instante: Any
     ) -> None:
         self.partes.append({"indice": indice, "texto": texto, "message_id": message_id})
 
+    def marcar_parte_incerta(self, pedido: str, indice: int, motivo: str, instante: Any) -> None:
+        self.incertas.append({"indice": indice, "motivo": motivo})
+
     def indices_confirmados(self, pedido: str) -> set[int]:
         return {p["indice"] for p in self.partes}
 
+    def indices_incertos(self, pedido: str) -> set[int]:
+        return {p["indice"] for p in self.incertas}
+
+    def indices_intencoes(self, pedido: str) -> set[int]:
+        return {p["indice"] for p in self.intencoes}
+
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: Any
-    ) -> None:
+    ) -> int:
         self.tentativas.append({"resultado": resultado, "erro": erro})
+        return len(self.tentativas)
+
+    def finalizar_tentativa(
+        self, pedido: str, sequencial: int, resultado: str, erro: str | None, instante: Any
+    ) -> None:
+        self.tentativas[sequencial - 1].update(resultado=resultado, erro=erro)
 
 
 class CanalEspiao:
@@ -157,6 +177,26 @@ def test_registra_a_tentativa_bem_sucedida() -> None:
     assert repositorio.tentativas[-1]["erro"] is None
 
 
+def test_resposta_ambigua_do_telegram_marca_o_pedido_como_incerto() -> None:
+    class CanalAmbiguo:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            return 0
+
+    repositorio = RepositorioFalso(_pedido_pendente())
+    resultado = _worker(repositorio, CanalAmbiguo()).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert resultado.frase_reservada == "bloco-1"
+    assert repositorio.incertas == [
+        {
+            "indice": 0,
+            "motivo": "Telegram pode ter aceitado a parte, mas não houve confirmação durável",
+        }
+    ]
+    assert repositorio.partes == []
+
+
 # --- o worker lê da persistência ---------------------------------------------
 
 
@@ -170,7 +210,7 @@ def test_pedido_inexistente_nao_envia_nada() -> None:
 
 
 def test_pedido_ja_concluido_nao_reenvia() -> None:
-    concluido = _pedido_pendente().reservar("bloco-1").concluir()
+    concluido = _pedido_pendente().reservar("bloco-1").iniciar_envio().concluir()
     repositorio, canal = RepositorioFalso(concluido), CanalEspiao()
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -277,11 +317,11 @@ def test_erro_inesperado_registra_tentativa_e_propaga() -> None:
     """
     repositorio = RepositorioFalso(_pedido_pendente())
 
-    with pytest.raises(RuntimeError, match="boto3 estourou"):
+    with pytest.raises(RuntimeError, match="processamento interrompido"):
         _worker(repositorio, CanalQueQuebra()).executar("extra#42")
 
     assert repositorio.tentativas[-1]["resultado"] == "erro"
-    assert "boto3 estourou" in (repositorio.tentativas[-1]["erro"] or "")
+    assert repositorio.tentativas[-1]["erro"] == "erro de integração"
 
 
 def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
@@ -303,7 +343,7 @@ def test_frase_reservada_sumiu_depois_de_entregar_parte_mantem_a_reserva() -> No
     Liberar a reserva aqui violaria a invariante de que entrega parcial mantém a
     frase consumida — e registraria "sem frases" para um pedido que enviou algo.
     """
-    em_andamento = _pedido_pendente().reservar("bloco-sumida")
+    em_andamento = _pedido_pendente().reservar("bloco-sumida").iniciar_envio()
     repositorio = RepositorioFalso(em_andamento)
     repositorio.partes.append({"indice": 0, "texto": "já foi", "message_id": 901})
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
@@ -463,4 +503,18 @@ def test_o_pedido_e_gravado_antes_do_ciclo_ao_encerrar() -> None:
 
     _worker(repositorio, CanalEspiao(falhar_na_parte=0), ciclos=ciclos).executar("extra#42")
 
-    assert ordem == ["pedido", "ciclo"]
+    assert ordem[-2:] == ["pedido", "ciclo"]
+
+
+def test_tentativa_e_duravel_antes_de_ler_a_fonte() -> None:
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    class FonteInterrompida:
+        def listar(self) -> tuple[Frase, ...]:
+            assert repositorio.tentativas == [{"resultado": "iniciada", "erro": None}]
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _worker(repositorio, CanalEspiao(), fonte=FonteInterrompida()).executar("extra#42")
+
+    assert len(repositorio.tentativas) == 1

@@ -1,7 +1,14 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 FUSO_LOCAL = ZoneInfo("America/Sao_Paulo")
+
+
+def em_utc(instante: datetime) -> datetime:
+    """Normaliza um instante; datas sem fuso são ambíguas e recusadas."""
+    if instante.tzinfo is None or instante.utcoffset() is None:
+        raise ValueError("instante precisa declarar o fuso")
+    return instante.astimezone(UTC)
 
 
 def dia_local(instante: datetime) -> date:

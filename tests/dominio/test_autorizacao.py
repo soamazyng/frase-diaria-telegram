@@ -66,3 +66,29 @@ def test_comparacao_do_segredo_nao_vaza_tamanho_por_curto_circuito() -> None:
     assert POLITICA.avaliar(segredo="x", conversa=CONVERSA_DA_USUARIA) is Recusa.SEGREDO_INVALIDO
     longo = POLITICA.avaliar(segredo="s" * 500, conversa=CONVERSA_DA_USUARIA)
     assert longo is Recusa.SEGREDO_INVALIDO
+
+
+# --- as duas conferências, separadas -----------------------------------------
+
+
+def test_conferir_segredo_nao_depende_do_corpo() -> None:
+    """Precisa ser chamável antes de interpretar a requisição.
+
+    Decidir que um update é irrelevante antes de conferir o segredo daria a
+    qualquer origem uma resposta 200 e uma linha de log.
+    """
+    assert POLITICA.conferir_segredo("segredo-certo") is None
+    assert POLITICA.conferir_segredo("errado") is Recusa.SEGREDO_INVALIDO
+    assert POLITICA.conferir_segredo(None) is Recusa.SEGREDO_INVALIDO
+
+
+def test_conferir_conversa_avalia_origem_e_destinatario() -> None:
+    assert POLITICA.conferir_conversa(CONVERSA_DA_USUARIA) is None
+    assert (
+        POLITICA.conferir_conversa(Conversa(chat_id=8340090374, tipo="group"))
+        is Recusa.CONVERSA_NAO_PRIVADA
+    )
+    assert (
+        POLITICA.conferir_conversa(Conversa(chat_id=999, tipo="private"))
+        is Recusa.CHAT_NAO_AUTORIZADO
+    )

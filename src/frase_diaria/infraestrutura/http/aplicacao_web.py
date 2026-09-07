@@ -15,6 +15,7 @@ CABECALHO_DO_SEGREDO = "X-Telegram-Bot-Api-Secret-Token"
 
 
 class CasoDeReceberComando(Protocol):
+    def aceita_segredo(self, segredo: str | None) -> bool: ...
     def executar(self, segredo: str | None, corpo: dict[str, Any]) -> Desfecho: ...
 
 
@@ -60,6 +61,13 @@ def criar_aplicacao(
 
             A resposta nunca diz por que uma entrada foi recusada.
             """
+            segredo = request.headers.get(CABECALHO_DO_SEGREDO)
+            if not receber_comando.aceita_segredo(segredo):
+                # Antes de ler o corpo: sem o segredo, nem o formato da carga
+                # deve influenciar a resposta.
+                _log.warning("entrada recusada no cabeçalho")
+                return Response(status_code=200)
+
             bruto = await request.body()
             try:
                 corpo = json.loads(bruto)
@@ -70,10 +78,7 @@ def criar_aplicacao(
             if not isinstance(corpo, dict):
                 return Response(status_code=200)
 
-            desfecho = receber_comando.executar(
-                segredo=request.headers.get(CABECALHO_DO_SEGREDO),
-                corpo=corpo,
-            )
+            desfecho = receber_comando.executar(segredo=segredo, corpo=corpo)
             if desfecho is Desfecho.NAO_PERSISTIDO:
                 return Response(status_code=500)
             return Response(status_code=200)
