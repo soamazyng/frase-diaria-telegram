@@ -43,6 +43,16 @@ Resources:
           title: !Sub "${Prefixo}-http"
           version: "1.0"
         paths:
+          /telegram/webhook:
+            post:
+              responses:
+                "200":
+                  description: reconhecido
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                payloadFormatVersion: "2.0"
+                uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Funcao.Arn}/invocations"
           /health:
             get:
               responses:
@@ -87,6 +97,20 @@ Resources:
                   - "${Arn}/index/*"
                   - Arn:
                       Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+            # Só os parâmetros deste projeto, e só leitura.
+            - Effect: Allow
+              Action:
+                - ssm:GetParametersByPath
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/*"
+            # SecureString usa a chave gerenciada do SSM; sem isto a decifragem falha.
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
       Events:
         Health:
           Type: HttpApi
@@ -94,6 +118,12 @@ Resources:
             ApiId: !Ref Http
             Path: /health
             Method: GET
+        Webhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Http
+            Path: /telegram/webhook
+            Method: POST
 
   # Declarado explicitamente para controlar a retenção. Sem isso a Lambda cria
   # o grupo com retenção infinita, que cresce e passa a custar.
@@ -108,5 +138,8 @@ Outputs:
   UrlHealth:
     Description: URL pública do diagnóstico.
     Value: !Sub "https://${Http}.execute-api.${AWS::Region}.${AWS::URLSuffix}/health"
+  UrlWebhook:
+    Description: URL a registrar no Telegram via setWebhook.
+    Value: !Sub "https://${Http}.execute-api.${AWS::Region}.${AWS::URLSuffix}/telegram/webhook"
   VersaoPublicada:
     Value: !Ref Versao

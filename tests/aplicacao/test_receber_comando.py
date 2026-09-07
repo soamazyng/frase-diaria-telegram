@@ -1,0 +1,163 @@
+"""Fronteira do webhook: o que acontece quando o Telegram bate na porta.
+
+Duas regras estruturam tudo: o comando é persistido ANTES de a resposta HTTP
+confirmar recebimento, e uma conversa não autorizada não recebe resposta nem
+gera pedido.
+"""
+
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
+from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
+
+SEGREDO = "segredo-certo"
+CHAT = 8340090374
+POLITICA = PoliticaDeAcesso(segredo_esperado=SEGREDO, chat_id_autorizado=CHAT)
+
+
+class RelogioFixo:
+    def agora(self) -> datetime:
+        return datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+class RepositorioEmMemoria:
+    def __init__(self) -> None:
+        self.registrados: list[tuple[int, str]] = []
+
+    def registrar(self, atualizacao, instante) -> bool:  # type: ignore[no-untyped-def]
+        chave = (atualizacao.update_id, atualizacao.comando.value)
+        if any(u == atualizacao.update_id for u, _ in self.registrados):
+            return False
+        self.registrados.append(chave)
+        return True
+
+
+class RepositorioQueFalha:
+    def registrar(self, atualizacao, instante) -> bool:  # type: ignore[no-untyped-def]
+        raise RuntimeError("DynamoDB indisponível")
+
+
+class CanalEspiao:
+    def __init__(self) -> None:
+        self.enviados: list[tuple[int, str]] = []
+
+    def enviar_texto(self, chat_id: int, texto: str) -> None:
+        self.enviados.append((chat_id, texto))
+
+
+def _mensagem(
+    texto: str = "/start",
+    chat_id: int = CHAT,
+    tipo: str = "private",
+    update_id: int = 1,
+) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "message": {"chat": {"id": chat_id, "type": tipo}, "text": texto},
+    }
+
+
+def _caso(repositorio: Any | None = None, canal: Any | None = None) -> ReceberComando:
+    return ReceberComando(
+        politica=POLITICA,
+        repositorio=repositorio if repositorio is not None else RepositorioEmMemoria(),
+        canal=canal if canal is not None else CanalEspiao(),
+        relogio=RelogioFixo(),
+    )
+
+
+# --- caminho feliz -----------------------------------------------------------
+
+
+def test_start_registra_e_responde_a_ajuda() -> None:
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+
+    desfecho = _caso(repositorio, canal).executar(segredo=SEGREDO, corpo=_mensagem("/start"))
+
+    assert desfecho is Desfecho.ACEITO
+    assert len(repositorio.registrados) == 1
+    assert len(canal.enviados) == 1
+    ajuda = canal.enviados[0][1]
+    assert "/frase" in ajuda and "/status" in ajuda
+
+
+def test_comando_desconhecido_autorizado_recebe_ajuda_curta() -> None:
+    canal = CanalEspiao()
+
+    desfecho = _caso(canal=canal).executar(segredo=SEGREDO, corpo=_mensagem("bom dia"))
+
+    assert desfecho is Desfecho.ACEITO
+    assert "/frase" in canal.enviados[0][1]
+
+
+# --- AC18: quem não é a usuária não recebe nada ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("descricao", "segredo", "corpo"),
+    [
+        ("segredo inválido", "errado", _mensagem()),
+        ("segredo ausente", None, _mensagem()),
+        ("conversa de grupo", SEGREDO, _mensagem(tipo="group")),
+        ("outro chat_id", SEGREDO, _mensagem(chat_id=999999)),
+    ],
+)
+def test_entrada_nao_autorizada_nao_responde_e_nao_registra(descricao, segredo, corpo) -> None:  # type: ignore[no-untyped-def]
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+
+    desfecho = _caso(repositorio, canal).executar(segredo=segredo, corpo=corpo)
+
+    assert desfecho is Desfecho.IGNORADO, descricao
+    assert repositorio.registrados == [], descricao
+    assert canal.enviados == [], descricao
+
+
+# --- idempotência ------------------------------------------------------------
+
+
+def test_update_repetido_nao_registra_de_novo_nem_responde_de_novo() -> None:
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+    caso = _caso(repositorio, canal)
+    corpo = _mensagem("/start", update_id=42)
+
+    primeiro = caso.executar(segredo=SEGREDO, corpo=corpo)
+    segundo = caso.executar(segredo=SEGREDO, corpo=corpo)
+
+    assert primeiro is Desfecho.ACEITO
+    assert segundo is Desfecho.JA_CONHECIDO
+    assert len(repositorio.registrados) == 1
+    assert len(canal.enviados) == 1
+
+
+# --- updates irrelevantes ----------------------------------------------------
+
+
+def test_update_irrelevante_e_reconhecido_sem_registrar() -> None:
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+
+    irrelevante = {"update_id": 3, "poll": {}}
+
+    desfecho = _caso(repositorio, canal).executar(segredo=SEGREDO, corpo=irrelevante)
+
+    assert desfecho is Desfecho.IGNORADO
+    assert repositorio.registrados == []
+    assert canal.enviados == []
+
+
+# --- persistência antes da confirmação ---------------------------------------
+
+
+def test_falha_ao_persistir_nao_responde_e_pede_reentrega() -> None:
+    canal = CanalEspiao()
+
+    caso = _caso(RepositorioQueFalha(), canal)
+
+    desfecho = caso.executar(segredo=SEGREDO, corpo=_mensagem("/start"))
+
+    assert desfecho is Desfecho.NAO_PERSISTIDO
+    # Nada foi enviado: responder sem ter registrado deixaria o Telegram
+    # reentregar um comando que a usuária já viu respondido.
+    assert canal.enviados == []
