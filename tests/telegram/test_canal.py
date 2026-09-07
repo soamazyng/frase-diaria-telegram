@@ -45,6 +45,7 @@ def test_envia_texto_para_a_conversa(monkeypatch: pytest.MonkeyPatch) -> None:
     assert message_id == 12
     assert capturado["corpo"]["chat_id"] == 8340090374
     assert capturado["corpo"]["text"] == "olá"
+    assert capturado["corpo"]["parse_mode"] == "HTML"
     assert "sendMessage" in capturado["url"]
 
 

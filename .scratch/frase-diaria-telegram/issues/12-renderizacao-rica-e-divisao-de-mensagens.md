@@ -4,12 +4,12 @@
 
 **Blocked by:** 10 — Sincronização com Notion substitui as fixtures.
 
-**Status:** ready-for-agent
+**Status:** concluído em 2026-09-07 — ver `docs/12-renderizacao-rica-e-divisao-de-mensagens.md`
 
-- [ ] Renderização em HTML suportado pela Bot API, com escape correto de caracteres.
-- [ ] Negrito, itálico, código e links preservados; cores e fundos do Notion viram destaque em negrito quando não houver equivalente.
-- [ ] Apenas metadados operacionais são removidos da mensagem; o conteúdo da usuária não é reescrito nem resumido.
-- [ ] Texto longo é dividido sem perda, mantendo a ordem e marcação válida em cada parte (AC11).
-- [ ] Acentos, caracteres especiais, links e destaques sobrevivem à renderização (AC11).
-- [ ] Limites de texto e de legenda são validados contra os contratos atuais da Bot API, não contra números fixos presumidos.
-- [ ] Uma frase permanece uma entrega lógica, ainda que ocupe várias mensagens.
+- [x] Renderização em HTML suportado pela Bot API, com escape correto de caracteres.
+- [x] Negrito, itálico, código e links preservados; cores e fundos do Notion viram destaque em negrito quando não houver equivalente.
+- [x] Apenas metadados operacionais são removidos da mensagem; o conteúdo da usuária não é reescrito nem resumido.
+- [x] Texto longo é dividido sem perda, mantendo a ordem e marcação válida em cada parte (AC11).
+- [x] Acentos, caracteres especiais, links e destaques sobrevivem à renderização (AC11).
+- [x] Limites de texto e de legenda são validados contra os contratos atuais da Bot API, não contra números fixos presumidos.
+- [x] Uma frase permanece uma entrega lógica, ainda que ocupe várias mensagens.

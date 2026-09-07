@@ -37,7 +37,9 @@ class TelegramHttp:
         O message_id é o que torna a entrega verificável depois: sem ele, o
         histórico registraria "enviei" sem poder apontar o que foi enviado.
         """
-        corpo = json.dumps({"chat_id": chat_id, "text": texto}).encode("utf-8")
+        corpo = json.dumps({"chat_id": chat_id, "text": texto, "parse_mode": "HTML"}).encode(
+            "utf-8"
+        )
         requisicao = urllib.request.Request(
             f"{BASE}/bot{self.token}/sendMessage",
             data=corpo,

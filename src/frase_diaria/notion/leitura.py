@@ -118,6 +118,8 @@ def _trechos_de(bloco: dict[str, Any]) -> tuple[Trecho, ...]:
             sublinhado=bool(item.get("annotations", {}).get("underline")),
             codigo=bool(item.get("annotations", {}).get("code")),
             link=item.get("href"),
+            cor=str(item.get("annotations", {}).get("color", "default")),
+            fundo=str(item.get("annotations", {}).get("background", "default")),
         )
         for item in conteudo.get("rich_text", [])
     )

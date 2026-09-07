@@ -16,6 +16,8 @@ class Trecho:
     sublinhado: bool = False
     codigo: bool = False
     link: str | None = None
+    cor: str = "default"
+    fundo: str = "default"
 
 
 @dataclass(frozen=True)

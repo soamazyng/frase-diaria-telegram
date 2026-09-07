@@ -31,7 +31,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
 | 10 | Concluído (wiring fechado pelo ticket 11) | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: 2 achados, ambos corrigidos |
 | 11 | Concluído | Review executado no diretório de trabalho do ticket (2 rodadas — a 1ª não viu os arquivos novos, untracked) | Spec: OK após correção; Standards: 4 achados, todos corrigidos |
-| 12 | Pendente | Não aplicável ainda | Pendente |
+| 12 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: OK |
 | 13 | Pendente | Não aplicável ainda | Pendente |
 | 14 | Pendente | Não aplicável ainda | Pendente |
 | 15 | Pendente | Não aplicável ainda | Pendente |
