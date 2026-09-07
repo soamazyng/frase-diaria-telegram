@@ -48,6 +48,27 @@ def test_busca_filhos_envia_o_token_no_cabecalho(monkeypatch: pytest.MonkeyPatch
     assert "pagina-1/children" in capturado["url"]
 
 
+def test_busca_filhos_aceita_o_id_com_titulo_da_url_colada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Copiar o link de uma página do Notion traz o título como prefixo do id
+    # (`Titulo-Da-Colecao-<32hex>`); a API só aceita o id puro. Achado ao
+    # validar o acesso de produção pela primeira vez (HTTP 400).
+    capturado: dict[str, Any] = {}
+    id_puro = "8f3a1b2c4d5e6f708192a3b4c5d6e7f8"
+
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        capturado["url"] = requisicao.full_url
+        return _resposta({"results": [], "has_more": False})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    ClienteNotionHttp(token=TOKEN).buscar_filhos(f"Titulo-Da-Colecao-{id_puro}")
+
+    assert f"{id_puro}/children" in capturado["url"]
+    assert "Titulo-Da-Colecao" not in capturado["url"]
+
+
 def test_busca_filhos_percorre_toda_a_paginacao(monkeypatch: pytest.MonkeyPatch) -> None:
     paginas = [
         {"results": [{"id": "b1", "type": "paragraph"}], "has_more": True, "next_cursor": "c1"},
@@ -127,6 +148,21 @@ def test_busca_comentarios_devolve_none_quando_acesso_e_negado(
     monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
 
     assert ClienteNotionHttp(token=TOKEN).buscar_comentarios("bloco-1") is None
+
+
+def test_normalizar_id_aceita_uuid_com_tracos_e_titulo(monkeypatch: pytest.MonkeyPatch) -> None:
+    capturado: dict[str, Any] = {}
+    uuid_com_tracos = "8f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8"
+
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        capturado["url"] = requisicao.full_url
+        return _resposta({"results": [], "has_more": False})
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    ClienteNotionHttp(token=TOKEN).buscar_filhos(f"Outro-Titulo-{uuid_com_tracos}")
+
+    assert f"{uuid_com_tracos}/children" in capturado["url"]
 
 
 def test_busca_comentarios_sem_negacao_devolve_os_itens(monkeypatch: pytest.MonkeyPatch) -> None:

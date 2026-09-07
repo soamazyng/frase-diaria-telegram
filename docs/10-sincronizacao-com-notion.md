@@ -60,20 +60,35 @@ encontrou e confirmou dois defeitos, ambos corrigidos antes do commit:
   reproduzindo o loop de verdade (com timeout de shell) antes de corrigir.
   Regressão: `test_has_more_sem_next_cursor_nao_entra_em_loop_infinito`.
 
-## Próximo passo manual (usuária)
+## Credencial de produção — cadastrada e verificada
 
-Antes de qualquer wiring em produção, falta cadastrar a integração do Notion:
+A integração interna do Notion foi criada, a página da coleção foi conectada a ela, e
+o token e o `page_id` foram registrados no SSM Parameter Store
+(`/frase-diaria/notion-token` como `SecureString`, `/frase-diaria/notion-pagina-id`
+como `String`), num terminal separado, nunca colados na conversa.
 
-1. Criar uma integração interna no Notion e compartilhar a página da coleção com ela.
-2. Registrar o token e o `page_id` no SSM Parameter Store, num terminal separado (nunca colado na conversa):
-   ```sh
-   aws ssm put-parameter --profile perfil-padrao --region us-east-1 \
-     --name /frase-diaria/notion-token --type SecureString --value 'SEU_TOKEN' --overwrite
-   aws ssm put-parameter --profile perfil-padrao --region us-east-1 \
-     --name /frase-diaria/notion-pagina-id --type String --value 'SEU_PAGE_ID' --overwrite
-   ```
+O acesso foi validado com uma chamada real e não-mutante (`LeitorDeColecao.ler`,
+lendo os segredos do SSM para variáveis locais, nunca impressas): **77 frases
+encontradas**, o mesmo número que o `CLAUDE.md` já registrava para a coleção
+consultada. Os 77 diagnósticos retornados são todos `acesso_negado` às discussões —
+a integração só tem a capacidade *Read content*; discussões nativas por bloco
+exigem também *Read comments*, uma capacidade **opcional** (o bot funciona sem
+ela; só deixa de trazer comentários em thread). Habilitá-la, se desejado, é uma
+alteração na página da integração em notion.so/profile/integrations, sem tocar
+em código.
 
-O wiring em `infraestrutura/composicao.py` (trocar `ColecaoFixture` por um adaptador real) só faz sentido depois que o ticket 11 (persistência/cache) e o ticket 12 (renderização) decidirem como `ColecaoValida` vira `Frase`.
+Um achado deste teste real: o valor registrado para `notion-pagina-id` veio da URL
+completa da página (título + id), não só o id — um jeito comum de copiar o link no
+Notion. O cliente foi corrigido para aceitar essa forma (extrai os últimos 32
+caracteres hexadecimais, com ou sem traços), então o parâmetro não precisou ser
+corrigido.
+
+## Wiring em produção — ainda não
+
+`infraestrutura/composicao.py` continua usando `ColecaoFixture`. Trocá-la por um
+adaptador real só faz sentido depois que o ticket 11 (persistência/cache) e o
+ticket 12 (renderização) decidirem como `ColecaoValida` (o conteúdo bruto
+preservado) vira `Frase` (o que `ProcessarPedido` de fato envia).
 
 ## Verificação
 
@@ -83,4 +98,4 @@ O gate do repositório foi executado e passou:
 - `mypy` estrito
 - `pytest`
 
-Resultado local: 250 testes passaram, incluindo o cliente Notion (paginação completa, paginação incompleta nunca devolve resultado parcial, rate limit, acesso negado, sanitização do token) e o leitor (item preenchido vira frase, item vazio não, subpágina ignorada, conteúdo solto vira diagnóstico, lista numerada aninhada não cria frase independente, descendentes recursivos, discussões e acesso negado a elas, coleção totalmente vazia é legítima, erro em qualquer nível vira `SincronizacaoIncompleta`) — tudo com um cliente falso, sem rede real.
+Resultado local: 252 testes passaram, incluindo o cliente Notion (paginação completa, paginação incompleta nunca devolve resultado parcial, rate limit, acesso negado, sanitização do token, id com título/URL colada) e o leitor (item preenchido vira frase, item vazio não, subpágina ignorada, conteúdo solto vira diagnóstico, lista numerada aninhada não cria frase independente, descendentes recursivos, discussões e acesso negado a elas, coleção totalmente vazia é legítima, erro em qualquer nível vira `SincronizacaoIncompleta`) — tudo com um cliente falso, sem rede real. Além disso, uma chamada real contra a AWS/Notion de produção confirmou o acesso (77 frases).

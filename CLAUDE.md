@@ -46,7 +46,10 @@ conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
 `telegram-chat-id` (**672024065** — a conversa da usuária; o id do bot é
-8340090374 e não serve), `webhook-secret`.
+8340090374 e não serve), `webhook-secret`, `notion-token` (integração interna,
+capacidade só de leitura de conteúdo; leitura de comentários é opcional e não
+está habilitada) e `notion-pagina-id` (aceita o id puro ou a URL completa da
+página, com o título como prefixo — o cliente normaliza).
 
 Manuseio de segredos, cache por container e depuração do webhook: `rules.md`.
 

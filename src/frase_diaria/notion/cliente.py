@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -10,6 +11,20 @@ from typing import Any
 BASE = "https://api.notion.com"
 VERSAO_DA_API = "2025-09-03"
 TAMANHO_DA_PAGINA = 100
+
+# Copiar o link de uma página do Notion traz o título como prefixo do id
+# (`Titulo-Da-Pagina-<32hex>` ou `...-<uuid-com-tracos>`); a API só aceita o
+# id puro. Casar pelo final da string extrai o id sem exigir que quem chama
+# conheça essa peculiaridade — e não afeta um id já limpo, que já termina nele
+# mesmo.
+_PADRAO_DO_ID = re.compile(
+    r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$"
+)
+
+
+def _normalizar_id(bloco_id: str) -> str:
+    casamento = _PADRAO_DO_ID.search(bloco_id.strip())
+    return casamento.group(0) if casamento else bloco_id
 
 
 class ErroDoNotion(RuntimeError):
@@ -39,7 +54,7 @@ class ClienteNotionHttp:
 
     def buscar_filhos(self, bloco_id: str) -> tuple[dict[str, Any], ...]:
         """Todos os blocos filhos diretos de `bloco_id`, na ordem da API."""
-        return tuple(self._paginar(f"/v1/blocks/{bloco_id}/children"))
+        return tuple(self._paginar(f"/v1/blocks/{_normalizar_id(bloco_id)}/children"))
 
     def buscar_comentarios(self, bloco_id: str) -> tuple[dict[str, Any], ...] | None:
         """Discussões nativas associadas ao bloco, ou `None` se o acesso for negado.
@@ -48,7 +63,7 @@ class ClienteNotionHttp:
         transforma o `None` em diagnóstico, não em falha de sincronização.
         """
         try:
-            return tuple(self._paginar("/v1/comments", {"block_id": bloco_id}))
+            return tuple(self._paginar("/v1/comments", {"block_id": _normalizar_id(bloco_id)}))
         except AcessoNegado:
             return None
 

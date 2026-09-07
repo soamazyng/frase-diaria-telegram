@@ -4,13 +4,13 @@
 
 **Blocked by:** 05 — /frase entrega uma frase de fixture.
 
-**Status:** em andamento em 2026-09-07 — núcleo de leitura e conversão pronto e
-testado, ver `docs/10-sincronizacao-com-notion.md`. Falta o passo manual da
-usuária (credencial de produção + `page_id` no SSM, fora do repositório) e a
-decisão de wiring, que chega com os tickets 11 (persistência/cache) e 12
-(renderização) — só então este ticket pode ser marcado concluído.
+**Status:** em andamento em 2026-09-07 — núcleo de leitura e conversão pronto,
+testado e verificado contra a coleção real (77 frases, ver
+`docs/10-sincronizacao-com-notion.md`). Falta apenas a decisão de wiring, que
+chega com os tickets 11 (persistência/cache) e 12 (renderização) — só então
+este ticket pode ser marcado concluído.
 
-- [ ] A integração de produção tem acesso de leitura à página, com credencial cadastrada fora do repositório. — **pendente, passo manual da usuária.**
+- [x] A integração de produção tem acesso de leitura à página, com credencial cadastrada fora do repositório. — cadastrada pela usuária e verificada com uma chamada real e não-mutante (77 frases encontradas).
 - [x] Apenas itens numerados preenchidos do nível da coleção viram frases; o conteúdo descendente pertence à frase que o contém e uma lista numerada interna não cria frases independentes.
 - [x] Blocos de subpágina e o projeto inteiro são ignorados; itens vazios não viram frases (AC10).
 - [x] A identidade estável da frase é o identificador do bloco raiz; mover ou editar mantém a identidade, apagar e recriar cria outra, e igualdade de texto nunca serve como deduplicação.

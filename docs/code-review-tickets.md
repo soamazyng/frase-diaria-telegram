@@ -29,7 +29,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 07 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 08 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
-| 10 | Em implementação (núcleo pronto; falta credencial manual e wiring de 11/12) | Review executado no diretório de trabalho do ticket | Spec: OK no escopo entregue; Standards: 2 achados, ambos corrigidos |
+| 10 | Em implementação (núcleo pronto e verificado contra a coleção real; falta wiring de 11/12) | Review executado no diretório de trabalho do ticket | Spec: OK no escopo entregue; Standards: 2 achados, ambos corrigidos |
 | 11 | Pendente | Não aplicável ainda | Pendente |
 | 12 | Pendente | Não aplicável ainda | Pendente |
 | 13 | Pendente | Não aplicável ainda | Pendente |
@@ -325,8 +325,8 @@ estado.
 - Ticket administrativo sem implementação de código a certificar: **01**.
 - Tickets concluídos com review executado no diretório de trabalho: **07, 08 e 09** — 09
   com achados corrigidos antes do commit.
-- Ticket em implementação, com o núcleo revisado e corrigido, mas não concluído (falta
-  credencial manual e wiring de 11/12): **10**.
+- Ticket em implementação, com o núcleo revisado, corrigido e verificado contra a
+  coleção real, mas não concluído (falta wiring de 11/12): **10**.
 - Tickets ainda pendentes: **11–22**.
 
 Não há base para registrar “OK final pós-correção” em 02, 05 ou 06. O próximo marco
