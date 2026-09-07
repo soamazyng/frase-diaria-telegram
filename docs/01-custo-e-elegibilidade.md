@@ -115,47 +115,79 @@ Tornar o repositório público **não é alternativa**: a spec proíbe explicita
 
 **Decisão adiada pela usuária.** Trava de fato apenas no ticket 21.
 
-### R2 — Armazenamento de segredos ainda não escolhido (ABERTO)
+### R2 — Armazenamento de segredos: SSM indisponível, Secrets Manager custa (ABERTO)
 
-Secrets Manager cobra por segredo/mês e não tem franquia permanente. SSM Parameter
-Store (Standard) não cobra pelo parâmetro. São necessários quatro valores: token do
-Notion, token do Telegram, `chat_id` e segredo do webhook. A escolha é uma das
-decisões em aberto do CLAUDE.md e entra no ticket 03.
+São quatro valores: token do Notion, token do Telegram, `chat_id` e segredo do
+webhook.
 
-### R3 — A identidade disponível não cobre o projeto (BLOQUEANTE)
+| Opção | Disponível? | Custo mensal |
+|---|---|---|
+| SSM Parameter Store (Standard) | **não** — `ssm:*` negado | seria R$0 |
+| Secrets Manager, 1 segredo JSON com os 4 valores | sim | ~US$0,40 (~R$2,20) |
+| Secrets Manager, 4 segredos separados | sim | ~US$1,60 (~R$8,80) |
+| Variáveis de ambiente da Lambda | sim | **R$0** |
 
-Sondagem feita em 2026-09-07 contra `user/aws-developer-group`:
+O caminho que seria gratuito (Parameter Store) está bloqueado pelas permissões. A
+opção gratuita restante é usar variáveis de ambiente da função, cifradas em repouso
+com chave gerenciada pela AWS e populadas por parâmetro do SAM — os valores nunca
+entram no Git. É aceitável para um bot de usuária única, com a ressalva de que
+variáveis de ambiente aparecem para quem tiver `lambda:GetFunctionConfiguration`.
 
-| Serviço | Resultado |
-|---|---|
-| CloudFormation, Lambda, DynamoDB, S3 | permitido |
-| API Gateway v2, EventBridge Scheduler, CloudWatch Logs | permitido |
-| `iam:ListRoles` | permitido |
-| `iam:ListAttachedUserPolicies`, `ListOpenIDConnectProviders` | **negado** |
-| `iam:SimulatePrincipalPolicy` | **negado** |
-| SSM Parameter Store | **negado** |
-| Secrets Manager | **negado** |
-| `freetier:GetFreeTierUsage` | **negado** |
+Se as permissões de SSM forem liberadas, Parameter Store volta a ser a melhor
+opção: gratuito e com o mesmo modelo de acesso por IAM.
 
-Consequências diretas:
+### R3 — A identidade não pode criar recursos de IAM (BLOQUEANTE)
 
-1. **Ticket 16 (bootstrap OIDC) não é executável com esta identidade.** Criar o
-   provedor OIDC e as roles exige permissões de IAM que ela não tem. A spec já
-   avisa que "um pipeline sem confiança não cria a própria autorização": o
-   bootstrap precisa de uma identidade **já autorizada**, e esta não é.
-2. **Ticket 03 (publicação SAM) provavelmente falha.** O SAM cria roles IAM para a
-   função Lambda; sem `iam:CreateRole` o deploy para no meio.
-3. **O risco R2 fica sem saída pelos caminhos usuais.** Nem Parameter Store nem
-   Secrets Manager estão acessíveis.
+Sondagem refeita em 2026-09-07, depois de a usuária ampliar as permissões. As
+sondas de criação usaram entradas inválidas de propósito, para que a AWS
+autorizasse antes de validar: **nenhum recurso foi criado** (confirmado por
+`list-open-id-connect-providers` e `list-secrets`, ambos vazios ao final).
 
-Alternativas, da mais barata para a mais cara:
+| Ação | Antes | Agora |
+|---|---|---|
+| `cloudformation:CreateStack` | — | **permitido** |
+| `secretsmanager:ListSecrets` / `CreateSecret` | negado | **permitido** |
+| `iam:ListOpenIDConnectProviders` | negado | **permitido** |
+| `iam:ListRoles`, `iam:GetRole` | permitido | permitido |
+| **`iam:CreateRole`** | — | **NEGADO** |
+| **`iam:CreateOpenIDConnectProvider`** | negado | **NEGADO** |
+| **`iam:AttachRolePolicy`** | — | **NEGADO** |
+| `iam:SimulatePrincipalPolicy`, `ListAttachedUserPolicies` | negado | NEGADO |
+| `ssm:DescribeParameters` | negado | NEGADO |
+| `freetier:GetFreeTierUsage` | negado | NEGADO |
+| `organizations:DescribeOrganization` | — | NEGADO |
 
-- **Conceder permissões ao usuário atual** usando o root ou um admin da conta
-  712790115760. Resolve tudo sem criar conta nova, se a usuária tiver esse acesso.
-- **Usar outra identidade da mesma conta** que já tenha poder de IAM, apenas para
-  o bootstrap (que roda uma vez), mantendo a atual para o dia a dia.
-- **Criar uma conta AWS dedicada**, onde a usuária é root por construção. Também
-  separa o billing do material de curso.
+As leituras melhoraram, mas **a escrita em IAM continua negada** — e é ela que os
+tickets 03 e 16 exigem.
+
+**Ticket 16 (bootstrap OIDC): impossível.** Exige `CreateOpenIDConnectProvider` e
+`CreateRole`, ambos negados. Como o 16 bloqueia 17 → 18 → 19 → 20 → 21, a frente
+inteira de CI/CD está parada atrás dele.
+
+**Ticket 03 (publicação SAM): bloqueado no caminho normal.** `CreateStack` é
+permitido, mas o SAM cria a execution role da Lambda e esbarra em `CreateRole`.
+Existe um contorno: a conta tem três roles com principal `lambda.amazonaws.com`
+(`Lambda_Execution_Role`, `hello-world-python-role-rwu4pmmk`,
+`serverless-rest-api-with-dynamodb-dev-us-east-2-lambdaRole`) e o SAM aceita uma
+role explícita em vez de criar a sua. O contorno tem dois defeitos: depende de
+`iam:PassRole` (não testado) e viola a exigência da spec de "permissões
+específicas por função", porque reaproveita uma role de tutorial com escopo
+desconhecido. Serve para destravar um experimento, não para a versão final.
+
+### R6 — Hipótese: a conta pode estar sob uma Service Control Policy (ABERTO)
+
+A conta tem `AWSServiceRoleForOrganizations` e `AWSServiceRoleForSSO`, o que
+indica pertencer a uma AWS Organization. `organizations:DescribeOrganization` está
+negado, então não dá para confirmar pela API.
+
+Isso importa porque **uma SCP vence sobre políticas de identidade**: se houver uma
+SCP negando escrita em IAM, conceder permissões ao usuário — ou até usar o root da
+conta — não resolve. Antes de investir em ajustar permissões, vale confirmar no
+console (IAM → Access Analyzer, ou a página da conta em Organizations) se a conta é
+membro de uma organização e se há SCP restringindo IAM.
+
+Se a hipótese se confirmar, a única saída é uma **conta AWS fora dessa
+organização**.
 
 ### R5 — Elegibilidade de franquia não verificável nesta conta (ABERTO)
 
@@ -179,9 +211,13 @@ rede privada.
 - [x] Definir a conta AWS: **712790115760**.
 - [x] Corrigir a seção do perfil no `~/.aws/config` para `[profile perfil-padrao]`.
 - [x] Confirmar a região: **us-east-1**.
-- [ ] **B1 — resolver as permissões de IAM** (risco R3). Sem isso os tickets 03 e
-      16 não avançam.
-- [ ] Confirmar o plano do GitHub — exige `gh auth refresh -h github.com -s user`.
+- [ ] **B1 — liberar escrita em IAM** (risco R3): `iam:CreateRole`,
+      `iam:CreateOpenIDConnectProvider`, `iam:AttachRolePolicy`, `iam:PassRole`.
+      Sem isso os tickets 03 e 16 não avançam.
+- [ ] **B2 — confirmar se há SCP bloqueando IAM** (risco R6). Fazer *antes* de B1:
+      se houver, ajustar permissões do usuário não adianta.
+- [ ] Confirmar o plano do GitHub. O token tem `gist, read:org, repo, workflow`,
+      mas falta `user`; o refresh ainda não foi aplicado.
 - [x] Alertas de billing na AWS — já configurados pela usuária.
 
 ### Higiene de credenciais pendente
