@@ -4,9 +4,9 @@
 **Ticket:** 01 — Elegibilidade e estimativa de custo AWS/GitHub
 **Meta:** custo recorrente R$0, sem promessa de gratuidade.
 
-> Estado: **parcial.** Conta, região e identidade estão confirmadas, mas a
-> identidade disponível **não tem as permissões necessárias** para o bootstrap
-> nem para o armazenamento de segredos — ver seção 6.
+> Estado: **concluído** em 2026-09-07. Conta, região, identidade e plano
+> confirmados; permissões verificadas contra a conta real; riscos resolvidos ou
+> registrados.
 
 ## 1. Identidade e região
 
@@ -15,7 +15,7 @@
 | Conta AWS | **712790115760** ✓ |
 | Região | **us-east-1** ✓ |
 | Identidade disponível | `arn:aws:iam::712790115760:user/aws-developer-group` |
-| Identidade para bootstrap | ⚠ **a acima não serve** — ver seção 6, B1 |
+| Identidade para bootstrap | a acima, já com permissões suficientes ✓ |
 | Perfil local | `perfil-padrao` (no `~/.aws/config`) |
 | Conta GitHub | `soamazyng` (pessoal, criada em 2010-10-17) |
 | Repositório | `soamazyng/frase-diaria-telegram` — privado ✓ |
@@ -51,11 +51,11 @@ O reconciliador de pedidos domina o volume: sozinho é 99% das invocações.
 | EventBridge Scheduler | 14M/mês, **permanente** | ~8.670 | 0,06% | R$0 |
 | DynamoDB (armazenamento) | 25 GB *always free* | poucos MB | <0,1% | R$0 |
 | DynamoDB (requisições) | on-demand não tem franquia | ~100k req | — | ~US$0,01 |
-| API Gateway HTTP API | 1M/mês nos 12 primeiros meses | ~100 req | <0,1% | ~US$0,0001 |
+| API Gateway HTTP API | esgotada (conta > 12 meses) | ~100 req | — | ~US$0,0001 |
 | S3 (cache de mídia) | 5 GB / 20k GET / 2k PUT | poucos MB | <0,1% | ~R$0 |
 | CloudWatch Logs | 5 GB de ingestão | baixo, retenção 14 dias | baixo | ~R$0 |
 | Tráfego de saída | 100 GB/mês | desprezível | <0,1% | R$0 |
-| Segredos / KMS | **decisão em aberto** | — | — | ver seção 5 |
+| SSM Parameter Store (Standard) | sem cobrança por parâmetro | 4 parâmetros | — | R$0 |
 
 **Conclusão:** a operação do bot cabe na franquia *permanente* (Always Free), que
 não depende da idade da conta. Os serviços que dependem de franquia de 12 meses
@@ -120,64 +120,47 @@ adicional R$0 segue de pé. Vale registrar a dependência: se o plano for rebaix
 para Free no futuro, o AC29 deixa de ser atendível e o ticket 21 precisa ser
 revisto.
 
-### R2 — Armazenamento de segredos: SSM indisponível, Secrets Manager custa (ABERTO)
+### R2 — Armazenamento de segredos: **RESOLVIDO, gratuito**
 
-São quatro valores: token do Notion, token do Telegram, `chat_id` e segredo do
-webhook.
+`ssm:PutParameter` e `ssm:GetParameter` passaram a ser permitidos. O **SSM
+Parameter Store (Standard)** guarda os quatro valores — token do Notion, token do
+Telegram, `chat_id` e segredo do webhook — como `SecureString`, **sem custo por
+parâmetro**, com controle de acesso por IAM.
 
-| Opção | Disponível? | Custo mensal |
-|---|---|---|
-| SSM Parameter Store (Standard) | **não** — `ssm:*` negado | seria R$0 |
-| Secrets Manager, 1 segredo JSON com os 4 valores | sim | ~US$0,40 (~R$2,20) |
-| Secrets Manager, 4 segredos separados | sim | ~US$1,60 (~R$8,80) |
-| Variáveis de ambiente da Lambda | sim | **R$0** |
+Secrets Manager continua disponível como alternativa, mas custaria ~US$0,40 por
+segredo/mês sem trazer vantagem para este caso. Parameter Store é a escolha, a ser
+declarada no ticket 03.
 
-O caminho que seria gratuito (Parameter Store) está bloqueado pelas permissões. A
-opção gratuita restante é usar variáveis de ambiente da função, cifradas em repouso
-com chave gerenciada pela AWS e populadas por parâmetro do SAM — os valores nunca
-entram no Git. É aceitável para um bot de usuária única, com a ressalva de que
-variáveis de ambiente aparecem para quem tiver `lambda:GetFunctionConfiguration`.
+### R3 — Permissões da identidade: **RESOLVIDO**
 
-Se as permissões de SSM forem liberadas, Parameter Store volta a ser a melhor
-opção: gratuito e com o mesmo modelo de acesso por IAM.
+Depois de a usuária anexar `docs/aws-policy-bootstrap.json`, a verificação de
+2026-09-07 confirma tudo que os tickets 03 e 16 exigem:
 
-### R3 — A identidade não pode criar recursos de IAM (BLOQUEANTE)
+| Ação | Situação |
+|---|---|
+| `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PutRolePolicy`, `iam:PassRole` | permitido |
+| `iam:CreateOpenIDConnectProvider` | permitido |
+| `cloudformation:CreateStack`, `CreateChangeSet`, `ExecuteChangeSet` | permitido |
+| `lambda:CreateFunction`, `AddPermission`, `TagResource` | permitido |
+| `dynamodb:CreateTable`, `s3:CreateBucket`, `s3:PutObject` | permitido |
+| `scheduler:CreateSchedule`, `logs:CreateLogGroup` | permitido |
+| `apigatewayv2:CreateApi` | permitido |
+| `ssm:PutParameter`, `GetParameter` | permitido |
+| `freetier:GetFreeTierUsage` | permitido |
 
-Sondagem refeita em 2026-09-07, depois de a usuária ampliar as permissões. As
-sondas de criação usaram entradas inválidas de propósito, para que a AWS
-autorizasse antes de validar: **nenhum recurso foi criado** (confirmado por
-`list-open-id-connect-providers` e `list-secrets`, ambos vazios ao final).
+**Nota de método.** `iam:SimulatePrincipalPolicy` reportou `implicitDeny` para o
+API Gateway, mas a chamada real foi autorizada — o simulador não enxergou as
+políticas herdadas do grupo `developer`, ao qual o usuário pertence. Quando as
+duas fontes divergirem, **vale o teste real**; a simulação subestima o que o
+usuário pode fazer.
 
-| Ação | Antes | Agora |
-|---|---|---|
-| `cloudformation:CreateStack` | — | **permitido** |
-| `secretsmanager:ListSecrets` / `CreateSecret` | negado | **permitido** |
-| `iam:ListOpenIDConnectProviders` | negado | **permitido** |
-| `iam:ListRoles`, `iam:GetRole` | permitido | permitido |
-| **`iam:CreateRole`** | — | **NEGADO** |
-| **`iam:CreateOpenIDConnectProvider`** | negado | **NEGADO** |
-| **`iam:AttachRolePolicy`** | — | **NEGADO** |
-| `iam:SimulatePrincipalPolicy`, `ListAttachedUserPolicies` | negado | NEGADO |
-| `ssm:DescribeParameters` | negado | NEGADO |
-| `freetier:GetFreeTierUsage` | negado | NEGADO |
-| `organizations:DescribeOrganization` | — | NEGADO |
-
-As leituras melhoraram, mas **a escrita em IAM continua negada** — e é ela que os
-tickets 03 e 16 exigem.
-
-**Ticket 16 (bootstrap OIDC): impossível.** Exige `CreateOpenIDConnectProvider` e
-`CreateRole`, ambos negados. Como o 16 bloqueia 17 → 18 → 19 → 20 → 21, a frente
-inteira de CI/CD está parada atrás dele.
-
-**Ticket 03 (publicação SAM): bloqueado no caminho normal.** `CreateStack` é
-permitido, mas o SAM cria a execution role da Lambda e esbarra em `CreateRole`.
-Existe um contorno: a conta tem três roles com principal `lambda.amazonaws.com`
-(`Lambda_Execution_Role`, `hello-world-python-role-rwu4pmmk`,
-`serverless-rest-api-with-dynamodb-dev-us-east-2-lambdaRole`) e o SAM aceita uma
-role explícita em vez de criar a sua. O contorno tem dois defeitos: depende de
-`iam:PassRole` (não testado) e viola a exigência da spec de "permissões
-específicas por função", porque reaproveita uma role de tutorial com escopo
-desconhecido. Serve para destravar um experimento, não para a versão final.
+**Incidente registrado.** Ao sondar `iam:CreateOpenIDConnectProvider`, a chamada
+foi feita com um thumbprint propositalmente inválido para provocar erro de
+validação. A AWS **aceitou o valor** e criou o provedor
+`token.actions.githubusercontent.com` com thumbprint inválido. O recurso foi
+identificado e removido no mesmo dia; a conta terminou com zero provedores. A
+lição é que `CreateOpenIDConnectProvider` não valida o formato do thumbprint —
+sondar criação com entradas inválidas não é seguro para essa API.
 
 ### R6 — Hipótese de Service Control Policy: **DESCARTADA**
 
@@ -204,15 +187,13 @@ organizacional.
 - [x] Definir a conta AWS: **712790115760**.
 - [x] Corrigir a seção do perfil no `~/.aws/config` para `[profile perfil-padrao]`.
 - [x] Confirmar a região: **us-east-1**.
-- [ ] **B1 — anexar `docs/aws-policy-bootstrap.json` ao usuário
-      `aws-developer-group`.** Sem isso os tickets 03 e 16 não avançam. Duas
-      tentativas de ajuste manual não surtiram efeito; o JSON existe para
-      eliminar a chance de faltar alguma ação.
+- [x] B1 — `docs/aws-policy-bootstrap.json` anexado ao usuário; permissões
+      verificadas contra a conta real.
 - [x] B2 — hipótese de SCP descartada pela mensagem de erro da AWS (risco R6).
 - [x] Plano do GitHub confirmado: **Pro**, 3.000 min/mês (2026-09-07).
 - [x] Alertas de billing na AWS — já configurados pela usuária.
 
-### Higiene de credenciais pendente
+### Pendência menor: higiene de credenciais
 
 As chaves do `perfil-padrao` estão no `~/.aws/config`. O lugar convencional é o
 `~/.aws/credentials`; o `config` guarda região e perfis. Não é urgente, mas

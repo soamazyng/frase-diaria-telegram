@@ -135,7 +135,9 @@ Já fechadas — implemente conforme descrito, não reabra:
 - **Entrega incerta:** tratamento conservador — marcar a parte como incerta e suspender o reenvio automático, aceitando o risco de uma mensagem perdida em troca de não duplicar.
 - **GitHub:** conta `soamazyng`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
 - **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 3.000 do Pro — ~US$34/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
-- **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`. A identidade `user/aws-developer-group` **não tem permissões de IAM, SSM nem Secrets Manager** — os tickets 03 e 16 dependem de resolver isso (risco R3 em `docs/01-custo-e-elegibilidade.md`).
+- **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
+- **Segredos:** usar **SSM Parameter Store** (`SecureString`), que é gratuito. Não usar Secrets Manager: custaria ~US$0,40/segredo/mês sem vantagem aqui.
+- **Sondar permissões:** prefira o teste real com entrada inválida a `iam:SimulatePrincipalPolicy` — o simulador não enxerga políticas herdadas de grupo e subestima o que a identidade pode fazer. Exceção: `iam:CreateOpenIDConnectProvider` **não valida o thumbprint** e cria o recurso de verdade; não sondar essa API com entrada inválida.
 - **Sem VPC nem NAT.** Um NAT Gateway custaria ~US$32/mês sozinho e nenhum requisito exige rede privada.
 
 ## Decisões ainda em aberto
