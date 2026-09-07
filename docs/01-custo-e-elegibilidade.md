@@ -4,19 +4,26 @@
 **Ticket:** 01 — Elegibilidade e estimativa de custo AWS/GitHub
 **Meta:** custo recorrente R$0, sem promessa de gratuidade.
 
-> Estado: **parcial.** Os itens marcados como PENDENTE dependem de dados da conta
-> AWS que ainda não foi definida. Tudo que não depende da conta está fechado.
+> Estado: **parcial.** Conta, região e identidade estão confirmadas, mas a
+> identidade disponível **não tem as permissões necessárias** para o bootstrap
+> nem para o armazenamento de segredos — ver seção 6.
 
 ## 1. Identidade e região
 
 | Item | Valor |
 |---|---|
-| Conta AWS | **PENDENTE** — ver seção 6 |
-| Região | **PENDENTE** — proposta: `us-east-1` |
-| Identidade para bootstrap | **PENDENTE** |
+| Conta AWS | **712790115760** ✓ |
+| Região | **us-east-1** ✓ |
+| Identidade disponível | `arn:aws:iam::712790115760:user/aws-developer-group` |
+| Identidade para bootstrap | ⚠ **a acima não serve** — ver seção 6, B1 |
+| Perfil local | `perfil-padrao` (no `~/.aws/config`) |
 | Conta GitHub | `soamazyng` (pessoal, criada em 2010-10-17) |
 | Repositório | `soamazyng/frase-diaria-telegram` — privado ✓ |
-| Plano do GitHub | **PENDENTE** — o token do `gh` não tem escopo `user` |
+| Plano do GitHub | **PENDENTE** — token do `gh` sem escopo `user` |
+
+A conta 712790115760 é a mesma do perfil `bedrock-curso`, originalmente de curso.
+A escolha foi da usuária, ciente de que o billing fica misturado com material de
+estudo.
 
 `us-east-1` é proposta por ser a região mais barata e com a maior cobertura de
 serviços. A latência é irrelevante para um bot que envia uma mensagem por dia;
@@ -115,9 +122,49 @@ Store (Standard) não cobra pelo parâmetro. São necessários quatro valores: t
 Notion, token do Telegram, `chat_id` e segredo do webhook. A escolha é uma das
 decisões em aberto do CLAUDE.md e entra no ticket 03.
 
-### R3 — Conta AWS não definida (ABERTO)
+### R3 — A identidade disponível não cobre o projeto (BLOQUEANTE)
 
-Ver seção 6.
+Sondagem feita em 2026-09-07 contra `user/aws-developer-group`:
+
+| Serviço | Resultado |
+|---|---|
+| CloudFormation, Lambda, DynamoDB, S3 | permitido |
+| API Gateway v2, EventBridge Scheduler, CloudWatch Logs | permitido |
+| `iam:ListRoles` | permitido |
+| `iam:ListAttachedUserPolicies`, `ListOpenIDConnectProviders` | **negado** |
+| `iam:SimulatePrincipalPolicy` | **negado** |
+| SSM Parameter Store | **negado** |
+| Secrets Manager | **negado** |
+| `freetier:GetFreeTierUsage` | **negado** |
+
+Consequências diretas:
+
+1. **Ticket 16 (bootstrap OIDC) não é executável com esta identidade.** Criar o
+   provedor OIDC e as roles exige permissões de IAM que ela não tem. A spec já
+   avisa que "um pipeline sem confiança não cria a própria autorização": o
+   bootstrap precisa de uma identidade **já autorizada**, e esta não é.
+2. **Ticket 03 (publicação SAM) provavelmente falha.** O SAM cria roles IAM para a
+   função Lambda; sem `iam:CreateRole` o deploy para no meio.
+3. **O risco R2 fica sem saída pelos caminhos usuais.** Nem Parameter Store nem
+   Secrets Manager estão acessíveis.
+
+Alternativas, da mais barata para a mais cara:
+
+- **Conceder permissões ao usuário atual** usando o root ou um admin da conta
+  712790115760. Resolve tudo sem criar conta nova, se a usuária tiver esse acesso.
+- **Usar outra identidade da mesma conta** que já tenha poder de IAM, apenas para
+  o bootstrap (que roda uma vez), mantendo a atual para o dia a dia.
+- **Criar uma conta AWS dedicada**, onde a usuária é root por construção. Também
+  separa o billing do material de curso.
+
+### R5 — Elegibilidade de franquia não verificável nesta conta (ABERTO)
+
+`freetier:GetFreeTierUsage` está negado, então não foi possível confirmar pela API
+se a conta ainda tem franquia de 12 meses ou apenas o Always Free. Como a conta
+vem de um curso, o mais provável é que já tenha passado dos 12 meses.
+
+Isso **não muda a conclusão**: a estimativa da seção 3 mostra que o bot cabe no
+Always Free, e os serviços de franquia limitada custam centavos sem ela.
 
 ### R4 — VPC e NAT
 
@@ -128,21 +175,26 @@ rede privada.
 
 ## 6. Pendências que dependem da usuária
 
-- [ ] **Rotacionar a access key exposta** (`AKIA2L5M2AWYAO5YEYYL`), que apareceu em
-      texto plano no `~/.aws/config` durante a sessão de 2026-09-07.
-- [ ] Definir a conta AWS do projeto e registrar o número aqui.
-- [ ] Corrigir o perfil no `~/.aws/config`: a seção precisa ser
-      `[profile <nome>]`, não `[<nome>]`, e credenciais pertencem ao
-      `~/.aws/credentials`.
-- [ ] Confirmar a região.
+- [x] Rotacionar a access key exposta em 2026-09-07 — feito pela usuária.
+- [x] Definir a conta AWS: **712790115760**.
+- [x] Corrigir a seção do perfil no `~/.aws/config` para `[profile perfil-padrao]`.
+- [x] Confirmar a região: **us-east-1**.
+- [ ] **B1 — resolver as permissões de IAM** (risco R3). Sem isso os tickets 03 e
+      16 não avançam.
 - [ ] Confirmar o plano do GitHub — exige `gh auth refresh -h github.com -s user`.
+- [x] Alertas de billing na AWS — já configurados pela usuária.
+
+### Higiene de credenciais pendente
+
+As chaves do `perfil-padrao` estão no `~/.aws/config`. O lugar convencional é o
+`~/.aws/credentials`; o `config` guarda região e perfis. Não é urgente, mas
+convém mover quando houver oportunidade.
 
 ## 7. Como acompanhar o consumo depois
 
 **AWS**
 - Billing and Cost Management → *Free tier* mostra o uso contra cada franquia.
-- Billing → *Budgets*: criar um orçamento de **US$1/mês** com alerta por e-mail.
-  É o que transforma "meta R$0" em algo que avisa quando é violado.
+- Billing → *Budgets*: alertas **já configurados** pela usuária.
 - Cost Explorer, agrupado por serviço, para achar quem cresceu.
 
 **GitHub**

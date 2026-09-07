@@ -6,7 +6,7 @@
 
 **Status:** em andamento — documento em `docs/01-custo-e-elegibilidade.md`
 
-- [ ] Conta AWS, região e identidade para bootstrap confirmadas e registradas.
+- [~] Conta AWS (712790115760) e região (us-east-1) confirmadas; **identidade para bootstrap ainda não** — a disponível não tem permissões de IAM (risco R3).
 - [~] Elegibilidade de franquias verificada item a item (feita; falta confirmar contra a conta real): API Gateway HTTP API, Lambda, DynamoDB e índices, S3 e requisições, EventBridge Scheduler, CloudWatch Logs, armazenamento de segredos e KMS, tráfego de saída.
 - [x] Custo da varredura periódica do reconciliador (proposta de 5 em 5 minutos) incluído na estimativa, com o número de invocações mensais explícito.
 - [~] Plano do GitHub verificado quanto a minutos de Actions, armazenamento de artefatos e permissão para Actions criarem PR.
