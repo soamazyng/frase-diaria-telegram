@@ -306,6 +306,29 @@ validate --lint` revalidado. Esta é uma mudança normal de aplicação, que o
 próprio pipeline publica no próximo push — não uma mutação manual de infra
 fora do fluxo do ticket 18.
 
+## Sexta execução real — sucesso completo
+
+Com os dois `Name:` adicionados, o pipeline rodou do início ao fim sem
+nenhuma falha: `garantir-pr` → `verificar` → `construir` → `publicar`, os
+quatro jobs verdes. `sam deploy` atualizou `frase-diaria-app` de verdade
+(`UPDATE_COMPLETE`), publicando pela primeira vez as quatro funções
+completas — inclusive `AgendadorDiario` e `Reconciliador`, que nunca tinham
+sido publicadas de verdade antes (bloqueadas pelo bug do Makefile corrigido
+no início deste ticket). O diagnóstico pós-publicação aprovou saúde, versão,
+as quatro funções, o smoke test do webhook e os dois agendamentos. A
+implantação foi registrada `success` na API de Deployments do GitHub.
+
+Conferido diretamente contra a AWS e o GitHub reais, não só pelo log do
+job:
+
+```
+gh api .../deployments/6336765673/statuses  →  state: success
+GET /health                                 →  {"situacao":"ok","versao":"0cd19f86fcf5d1b65f6d9900db63fd8cda71fdb0",...}
+```
+
+`versao` bate exatamente com o SHA do commit publicado — AC21 exercitado
+contra o sistema real, não presumido.
+
 ## Verificação
 
 **Exercitado de verdade, não só lido:**
@@ -325,20 +348,32 @@ fora do fluxo do ticket 18.
   sistema) — zero achados nas duas rodadas, antes e depois dos ajustes de
   hardening.
 
-**Não exercitado nesta sessão — pendente de autorização explícita:** o job
-`publicar` nunca rodou contra o GitHub/AWS reais. Isso exigiria um push de
-verdade para `develop`, que aciona `sam deploy` em produção pelo papel
-`frase-diaria-publicacao` assumido por OIDC — uma mutação real de produção
-que o `AGENTS.md` exige autorização explícita para executar, e que não foi
-pedida nesta tarefa. A lógica foi revisada exaustivamente (concorrência,
-reconsulta de atualidade, checksum, diagnóstico, API de Deployments) e
-validada estruturalmente (lint, sintaxe, achados de hardening corrigidos),
-mas **o primeiro deploy real pelo pipeline ainda precisa ser observado** —
-inclusive para confirmar contra o GitHub real o comportamento de
-`auto_inactive` documentado, e contra a AWS real o diagnóstico pós-deploy
-(inclusive possível instabilidade de propagação entre `UPDATE_COMPLETE` da
-stack e `LastUpdateStatus: Successful` de cada função, que os `--retry` do
-`curl` amenizam só para `/health`, não para os demais checks).
+**Publicação real, autorizada explicitamente pela usuária, executada em seis
+rodadas até verde** (`git log` de `c2e4e88` a `0cd19f8`, todas nesta sessão,
+2026-09-08). Cada falha real corrigida em sequência, documentada acima com
+o log/evidência que a comprovou — nenhuma delas simulada ou presumida:
+
+1. Checksum: `.lock` do `uv` descartado por `include-hidden-files: false`.
+2. OIDC: `sub` no formato imutável, confirmado contra token real.
+3. `uvx` ausente no job `publicar` (faltava `setup-uv`).
+4. IAM: papel de publicação sem acesso ao bucket gerenciado pelo SAM.
+5. IAM/nomeação: `ScheduleV2` sem `Name:` gerava nomes fora do escopo IAM.
+6. **Sucesso completo** — os quatro jobs verdes, `sam deploy` real,
+   diagnóstico aprovado, implantação `success` na API de Deployments,
+   `GET /health` real confirmando `versao` = SHA publicado.
+
+Duas mutações de IAM (trust policy e permissão de bucket) foram aplicadas
+manualmente via `aws cloudformation execute-change-set`, cada uma revisada
+por change set antes (`Modify`, sem substituição) e confirmada
+explicitamente pela usuária — o classificador de segurança do Claude Code
+pausou a segunda para confirmação, por ser mutações de IAM em sequência. A
+correção do `ScheduleV2` (aplicação, não infra de confiança) fluiu pelo
+próprio pipeline, sem mutação manual.
+
+O comportamento `auto_inactive` da API de Deployments (marcar a implantação
+"success" anterior como "inactive" ao registrar uma nova) fica para ser
+observado no próximo push com diferenças reais — esta sessão só produziu
+uma implantação `success`, sem uma segunda para comparar.
 
 ## Review
 
@@ -363,10 +398,10 @@ Decisão técnica).
 
 ## Próximo passo
 
-O código está completo e localmente validado, mas a entrega deste ticket só
-fecha depois que o pipeline publicar de verdade pela primeira vez — o que
-exige um push autorizado para `develop` (mutação real de produção via OIDC).
-Até essa autorização e essa execução real, o item da issue permanece aberto
-apesar do código pronto. Depois de observada uma publicação real bem-sucedida
-(ou de corrigir o que ela revelar), o próximo ticket elegível por dependência
-é o **19 — Recuperação da versão anterior**.
+Ticket concluído: pipeline publicou de verdade, com diagnóstico aprovado
+contra a AWS real e implantação registrada `success` no GitHub. O próximo
+ticket elegível por dependência é o **19 — Recuperação da versão
+anterior**, que passa a ter algo real para recuperar em caso de falha —
+inclusive os cinco incidentes reais desta sessão (checksum, OIDC, `uv`
+ausente, dois gaps de IAM) são material direto para desenhar os cenários de
+falha que aquele ticket precisa cobrir.
