@@ -126,6 +126,21 @@ construção: se a versão ativa já é a estável, não faz nada.
 - Caminho "implantação travada" também exercitado nesta mesma execução,
   sem incidente: nenhuma implantação `in_progress` havia mais de 20
   minutos, então o passo não teve o que reconciliar.
+- **Mesmo achado, segundo efeito real: o guard de publicação do próprio
+  ticket 18 também quebrou.** O push seguinte para `develop` (commit
+  `58d2efd`, este ticket) foi bloqueado pelo passo "Reconsultar PR aberto,
+  SHA atual e base de main" — `gh api compare/main...develop` acusou
+  `diverged`, não `ahead`, porque `develop` nunca incorporou de volta o
+  commit de merge `100e337`. Abortou com segurança **antes** de tocar o
+  deploy (produção seguiu em `8fc30fa`, saudável) — o guard funcionou
+  exatamente como desenhado, só que a suposição por trás dele (histórico
+  linear entre `develop` e `main`) já não era mais verdadeira depois de um
+  merge commit. Corrigido mesclando `main` de volta em `develop`
+  (`dffa16f`, sem mudança de conteúdo) — publicação seguinte confirmada
+  verde, versão ativa = `dffa16f` (exatamente o SHA testado). Padrão usual
+  de git-flow após merge de release, mas **precisa virar prática
+  obrigatória documentada**, não uma correção pontual — ver "Próximo
+  passo".
 
 ## Review
 
@@ -135,13 +150,16 @@ infraestrutura (`infra/bootstrap.yaml`) e workflow YAML.
 
 ## Próximo passo
 
-1. **Corrigir a causa raiz do achado acima antes de confiar no
-   reconciliador em produção sem supervisão** — "versão estável" precisa
-   parar de presumir que o HEAD de `main` é literalmente o SHA testado.
-   Duas direções possíveis, nenhuma decidida ainda: (a) exigir merge
-   fast-forward de `develop -> main` (sem commit de merge novo), ou (b)
-   comparar contra o primeiro parent do commit de merge em vez do próprio
-   HEAD. Decisão da usuária — não presumir qual.
+1. **Decidir a política de merge `develop -> main`, agora com dois pontos
+   de quebra confirmados ao vivo** (o guard de publicação do ticket 18 e o
+   caminho de reconciliação deste ticket) — não só o reconciliador.
+   Direções possíveis, nenhuma decidida: (a) exigir merge fast-forward de
+   `develop -> main` (sem commit de merge novo, elimina o problema na
+   raiz); (b) manter merge commit, mas tornar obrigatório mesclar `main`
+   de volta em `develop` logo em seguida (o que resolveu ao vivo desta
+   vez, mas depende de lembrar de fazer manualmente); (c) comparar contra
+   o primeiro parent do commit de merge em vez do HEAD literal, nos dois
+   lugares que presumem SHA vinculado.
 2. **Ticket 21** — proteção de `main` e merge manual — já não está mais
    bloqueado por dependências (18 e 20 concluídos), mas herda o mesmo
    achado: qualquer proteção de `main` que dependa de "HEAD de main = SHA
