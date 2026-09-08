@@ -78,13 +78,24 @@ mecanismo: a **API de Deployments do GitHub** (`gh api .../deployments`),
 que não depende da feature "Environments" do Actions nem altera o token
 OIDC — só um rótulo `environment: "producao"` no corpo da requisição.
 
-**A API de Deployments também resolve "invalidar a elegibilidade de merge
-da candidata anterior" de graça.** Por comportamento documentado da API, ao
-registrar o status `success` de uma nova implantação, o GitHub marca
-automaticamente a implantação `success` anterior do mesmo ambiente como
-`inactive` (`auto_inactive`, ligado por padrão). Não foi escrita nenhuma
-lógica própria para isso — é o comportamento nativo da API sendo aproveitado
-pelo desenho.
+**"Invalidar a elegibilidade de merge da candidata anterior" não depende da
+API de Deployments — depende do GitHub avaliar checks por SHA exato.**
+Branch protection (ticket 21) sempre confere o check do commit que
+atualmente é o HEAD do PR; o resultado de um SHA anterior nunca é
+reaproveitado para um SHA diferente, mesmo que o anterior tenha sido
+`success`. É esse mecanismo, nativo do GitHub e independente de qualquer
+API adicional, que garante a invalidação. A API de Deployments serve só
+como registro/auditoria de "o que foi publicado quando" — não é o
+mecanismo de invalidação em si. (Nota de honestidade, registrada depois de
+observar o comportamento real: eu esperava que `auto_inactive` marcasse a
+implantação anterior como `inactive` ao registrar uma nova `success` — a
+documentação da API descreve esse comportamento como padrão. Na prática,
+com duas implantações reais `success` em sequência nesta sessão, a
+primeira permaneceu `success`, nunca virou `inactive`. Não persegui a causa
+— nenhum critério do ticket depende dela — mas registro que a frase
+"invalida a elegibilidade de merge da candidata anterior" do checklist do
+ticket 18 é satisfeita pelo mecanismo de checks por SHA acima, não pelo
+`auto_inactive`.)
 
 **AC22 tem duas camadas de proteção, uma da plataforma e uma do script.** A
 camada da plataforma: GitHub só mantém *uma* execução "em progresso" e *uma*
@@ -370,10 +381,15 @@ pausou a segunda para confirmação, por ser mutações de IAM em sequência. A
 correção do `ScheduleV2` (aplicação, não infra de confiança) fluiu pelo
 próprio pipeline, sem mutação manual.
 
-O comportamento `auto_inactive` da API de Deployments (marcar a implantação
-"success" anterior como "inactive" ao registrar uma nova) fica para ser
-observado no próximo push com diferenças reais — esta sessão só produziu
-uma implantação `success`, sem uma segunda para comparar.
+**Atualização depois de um segundo push real:** uma segunda publicação
+`success` aconteceu logo em seguida (documentação, sem mudança de código),
+permitindo observar o `auto_inactive` de verdade — e ele **não** marcou a
+implantação anterior como `inactive`; ela permanece `success` no histórico.
+Corrigida a alegação anterior neste documento (ver Decisão técnica): a
+garantia de "invalidar a elegibilidade de merge da candidata anterior" não
+vem daí, vem do GitHub sempre avaliar o check do SHA atual do PR, nunca de
+um SHA anterior — mecanismo que independe do `auto_inactive` e que
+continua garantido.
 
 ## Review
 
