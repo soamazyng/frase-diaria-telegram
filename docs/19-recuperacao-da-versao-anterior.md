@@ -158,6 +158,57 @@ gap novo foi encontrado ao desenhar esta parte.
   controlado antes de considerar o AC24 comprovado, não só implementado e
   estruturalmente exercitado.
 
+## Teste de fogo real — achado, corrigido, e o que ficou provado
+
+A usuária pediu explicitamente o teste real de recuperação. Em vez de
+quebrar o código da aplicação (o que a suíte de testes de `verificar`
+pegaria antes mesmo de chegar em `publicar`), o teste mudou só o parâmetro
+`Versao` do `sam deploy` para um valor propositalmente errado
+(`quebrado-de-proposito-ticket-19`) — o artefato e o código real publicados
+continuavam sendo exatamente os já aprovados em `verificar`; só o rótulo
+cosmético que `/health` e o Output `VersaoPublicada` relatam ficou errado.
+Deploy real, sem risco à funcionalidade do bot.
+
+**O que aconteceu:** o diagnóstico reprovou como esperado (mismatch de
+versão). "Localizar última publicação saudável" rodou e achou o SHA certo
+(`e26cca1...`). Mas **"Recuperar publicação saudável anterior" nunca
+rodou** — ficou `skipped` mesmo com o SHA já localizado — e a cadeia caiu
+direto em "Desabilitar agendamento diário", que **desabilitou de verdade**
+o `ScheduleV2` da diária em produção, e "Registrar diagnóstico no GitHub",
+que abriu a issue #3 de verdade.
+
+**Causa raiz:** os passos `Recuperar publicação saudável anterior` e
+`Verificar publicação recuperada` tinham `if:` sem `always()`/`failure()`/
+`cancelled()` explícito. O GitHub Actions insere um `success()` implícito
+nesse caso — e como o passo `diagnostico` já tinha falhado (é exatamente
+por isso que a recuperação deveria rodar), esse `success()` implícito
+bloqueava os dois passos, apesar da condição explícita (`sha != ''`) ser
+verdadeira. Nenhuma ferramenta estrutural (`actionlint`, `shellcheck`,
+`yaml.safe_load`, a skill `github-actions-hardening`) pega esse tipo de
+erro — é uma regra de semântica do runner, não de sintaxe.
+
+**Resposta imediata:** o agendamento foi reabilitado manualmente
+(`aws scheduler update-schedule`, conferido `ENABLED` antes de qualquer
+outra coisa), os dois `if:` corrigidos com `always()`, o `Versao` de teste
+revertido, tudo em um único commit (`904d85c`) — publicado e confirmado:
+`/health` voltou a relatar o SHA real, agendamento `ENABLED`. A issue #3
+foi fechada com o relato do que aconteceu.
+
+**O que ficou provado, contra o sistema real:**
+- O diagnóstico detecta corretamente um mismatch de versão.
+- "Localizar última publicação saudável" acha o SHA certo na API de
+  Deployments.
+- "Desabilitar agendamento diário" funciona de ponta a ponta — o `jq` que
+  reconstrói o payload de `update-schedule` a partir do `get-schedule` real
+  estava certo (só não deveria ter sido alcançado neste caso).
+- "Registrar diagnóstico no GitHub" cria a issue com o texto certo.
+
+**O que ainda não ficou provado:** o próprio passo `Recuperar publicação
+saudável anterior` — baixar o artefato de uma execução passada, conferir o
+checksum, rodar `sam deploy` com o SHA antigo — nunca chegou a executar.
+É o único trecho genuinamente novo e não testado do ticket 19; o próximo
+teste de fogo (com o bug já corrigido) deve mirar exatamente nele.
+
 ## Review
 
 Não se aplica `/code-review` de Standards/Spec em dois eixos nem
@@ -168,10 +219,9 @@ workflow YAML e uma composite action.
 
 Em aberto, nesta ordem de dependência:
 
-1. **Exercitar de verdade** os dois caminhos implementados (falha de deploy
-   com rollback nativo insuficiente; falha de diagnóstico com recuperação
-   bem-sucedida) — decisão da usuária sobre quando provocar isso contra a
-   produção real.
+1. **Repetir o teste de fogo** com o bug do `always()` já corrigido, para
+   provar de verdade o passo `Recuperar publicação saudável anterior` (o
+   único que ainda não rodou) — decisão da usuária sobre quando.
 2. **AC25 — recuperação em PR fechado sem merge.** Precisa de uma decisão
    de segurança específica: ampliar a trust policy do papel de publicação
    para aceitar também o `sub` de eventos `pull_request` (perdendo a

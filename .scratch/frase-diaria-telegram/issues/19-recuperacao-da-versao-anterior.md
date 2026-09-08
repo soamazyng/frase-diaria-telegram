@@ -11,15 +11,24 @@ do escopo desta entrega: recuperação de PR fechado sem merge (AC25) — exige
 decisão de segurança própria sobre a trust policy OIDC para eventos
 `pull_request`, documentada como próximo passo. O caminho feliz (diagnóstico
 aprova, recuperação fica inerte) foi publicado e confirmado ao vivo contra
-GitHub/AWS reais (`gh run` `34285100609`), inclusive achando e corrigindo
-uma divergência real entre `develop` e `main`. Os dois caminhos de
-recuperação em si (falha de deploy, falha de diagnóstico) ainda não foram
-exercitados — exigiria provocar uma falha de propósito em produção.
+GitHub/AWS reais, inclusive achando e corrigindo uma divergência real entre
+`develop` e `main`.
+
+**Teste de fogo real executado** (quebrar o diagnóstico de propósito, a
+pedido da usuária): achou e corrigiu um bug real — os passos de recuperação
+tinham `if:` sem `always()`, e o `success()` implícito do GitHub Actions os
+bloqueava depois de uma falha anterior no job. A recuperação nunca chegou a
+rodar; a cadeia caiu direto em desabilitar o agendamento diário de verdade.
+Corrigido, agendamento reabilitado e conferido `ENABLED`, `/health`
+conferido de volta ao SHA real. Detalhes completos em `docs/19`, seção
+"Teste de fogo real". O passo `Recuperar publicação saudável anterior` em
+si (baixar artefato antigo, redeploy) ainda não rodou de verdade — é o
+próximo teste de fogo a fazer, agora com o bug corrigido.
 
 - [x] Artefatos imutáveis, configuração e manifesto suficientes para restaurar uma publicação sem reconstruir dependências ficam preservados. *(retenção do artefato: 1 → 14 dias)*
 - [x] Dois marcos são mantidos e consultáveis: a publicação saudável anterior à tentativa e a versão estável aceita em `main`. *(API de Deployments do ticket 18 + HEAD de `main`; sem manifesto novo)*
-- [x] Falha de deploy recupera a publicação saudável anterior à tentativa, considerando também o rollback nativo da infraestrutura (AC24). *(implementado; não exercitado ao vivo)*
-- [x] Falha do diagnóstico pós-publicação recupera a publicação saudável anterior à tentativa (AC24). *(implementado; não exercitado ao vivo)*
+- [x] Falha de deploy recupera a publicação saudável anterior à tentativa, considerando também o rollback nativo da infraestrutura (AC24). *(implementado; caminho "desabilitar" exercitado ao vivo; caminho "redeploy do SHA anterior" ainda não)*
+- [x] Falha do diagnóstico pós-publicação recupera a publicação saudável anterior à tentativa (AC24). *(implementado; bug de always() achado e corrigido num teste real; redeploy do SHA anterior ainda não exercitado)*
 - [ ] Fechamento de PR sem merge, após várias candidatas, restaura a versão estável anterior ao PR — e não uma candidata do mesmo PR (AC25). *(fora do escopo desta entrega — ver docs/19, "Próximo passo")*
 - [x] Primeiro deploy sem versão anterior reverte os recursos de aplicação possíveis, deixa os envios desabilitados, preserva os dados já criados e documenta a ausência de versão recuperável (AC24). *(detectado quando a busca por implantação `success` anterior não acha nada; desabilita agendamento + abre issue)*
 - [x] Antes de recuperar, confere-se se a publicação ativa ainda pertence à tentativa ou ao PR afetado; um evento antigo não sobrescreve uma publicação posterior (AC23). *(garantido pela exclusão mútua do job — a recuperação roda dentro da mesma trava da tentativa original, nenhum evento concorrente pode intercalar)*
