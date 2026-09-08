@@ -300,7 +300,13 @@ jobs:
         if: steps.checar-atualidade.outputs.publicar == 'sim'
         run: make publicar-app-artefato
         env:
-          VERSAO: ${{ github.sha }}
+          # TESTE DE FOGO DELIBERADO Nº2 (ticket 19) — remover no próximo
+          # commit. Repetição do teste anterior, agora com o bug do
+          # always() já corrigido: objetivo é provar de verdade o passo
+          # "Recuperar publicação saudável anterior" em si (baixar artefato
+          # de execução passada, checksum, sam deploy com SHA antigo), que
+          # nunca chegou a rodar na primeira tentativa.
+          VERSAO: quebrado-de-proposito-ticket-19-round2
 
       - name: Verificar saúde, versão, dependências, webhook e agendamento
         # always(): mesmo que "sam deploy" tenha falhado, o CloudFormation
