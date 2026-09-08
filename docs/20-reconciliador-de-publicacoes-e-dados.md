@@ -98,19 +98,34 @@ construção: se a versão ativa já é a estável, não faz nada.
   aplicadas na AWS real (`UPDATE_COMPLETE`, após o incidente de rollback
   acima) e a policy `PublicarStackDeAplicacao` do papel de infraestrutura
   conferida ao vivo (`aws iam get-role-policy`) com os 10 `Sid` esperados.
-- **Não exercitado ao vivo — limitação estrutural, não pendência
-  minha:** GitHub só ativa `schedule`/`workflow_dispatch` para um workflow
-  a partir do conteúdo da **branch padrão** (`main`). Como este arquivo só
-  existe em `develop` até agora, `gh workflow list` nem sequer lista o
-  reconciliador, e `gh workflow run` falha com "could not find any
-  workflows". Isso vale tanto para o disparo manual de teste quanto para o
-  cron de hora em hora — nenhum dos dois vai rodar antes do merge do PR
-  `develop -> main` (#2). Um passo de debug temporário (mesmo padrão do
-  ticket 18) foi incluído no workflow para confirmar o claim `sub` do OIDC
-  na primeira execução real — ainda não removido, porque ainda não pôde
-  rodar. Isso também significa que a ampliação de IAM do papel de
-  infraestrutura, embora aplicada e conferida na AWS, ainda não foi
-  **usada** de verdade por nenhum workflow.
+- **Exercitado ao vivo após o merge do PR #2, sessão de 2026-09-08.**
+  `gh workflow run reconciliador.yml --ref main` disparado logo depois do
+  merge para `main`. Claim `sub` do OIDC confirmado contra o token real:
+  `repo:soamazyng@443219/frase-diaria-telegram@1359588301:ref:refs/heads/main`
+  — exatamente o formato já assumido na trust policy do papel de
+  infraestrutura (`infra/bootstrap.yaml`). `AssumeRoleWithWebIdentity`
+  funcionou de primeira; passo de debug removido neste commit. A ampliação
+  de IAM do papel de infraestrutura foi usada de verdade pela primeira vez
+  (`sam deploy` real na tentativa de reconciliação abaixo).
+- **Achado real: "versão estável" presume merge fast-forward, e
+  `gh pr merge --merge` não é fast-forward.** O passo "Avaliar" comparou o
+  HEAD de `main` (commit de merge `100e337`, criado pelo merge do PR #2)
+  contra a versão publicada (`8fc30fa`, o commit de `develop` testado pelo
+  pipeline) e viu divergência real — mas um commit de merge tradicional
+  sempre gera um SHA novo que nunca passou pelo CI/CD, então nenhum
+  artefato existia para `100e337` (`gh api .../actions/artifacts?name=...`
+  vazio). A reconciliação seguiu o caminho de falha por desenho: **abriu a
+  issue #4** e **desabilitou de verdade o agendamento diário**
+  (`frase-diaria-agendador-diario` → `DISABLED`). Não é uma falha de
+  publicação — a versão em produção (`8fc30fa`) sempre esteve correta e
+  saudável. Reativado manualmente (`aws scheduler update-schedule` →
+  `ENABLED`, confirmado) e a issue #4 comentada explicando o falso positivo
+  e fechada, minutos depois do incidente. **Causa raiz não corrigida nesta
+  sessão** (decisão explícita: registrar o achado e decidir a correção
+  depois) — ver "Próximo passo".
+- Caminho "implantação travada" também exercitado nesta mesma execução,
+  sem incidente: nenhuma implantação `in_progress` havia mais de 20
+  minutos, então o passo não teve o que reconciliar.
 
 ## Review
 
@@ -120,15 +135,15 @@ infraestrutura (`infra/bootstrap.yaml`) e workflow YAML.
 
 ## Próximo passo
 
-1. **Merge do PR `develop -> main` (#2)** — decisão da usuária. Só depois
-   disso o reconciliador passa a existir de verdade para o GitHub, e o
-   claim `sub` do OIDC para `schedule`/`workflow_dispatch` pode ser
-   confirmado contra um token real (ou corrigido, se a suposição
-   `ref:refs/heads/main` estiver errada, como já aconteceu duas vezes
-   nesta sessão com outros triggers).
-2. Depois de confirmado o claim `sub`: remover o passo de debug, e
-   idealmente provocar um teste real de cada caso (implantação travada,
-   PR fechado sem merge) — mesmo espírito dos testes de fogo do ticket 19.
-3. **Ticket 21** — proteção de `main` e merge manual — já não está mais
-   bloqueado só por este ticket; falta decidir também quando fazer esse
-   primeiro merge real.
+1. **Corrigir a causa raiz do achado acima antes de confiar no
+   reconciliador em produção sem supervisão** — "versão estável" precisa
+   parar de presumir que o HEAD de `main` é literalmente o SHA testado.
+   Duas direções possíveis, nenhuma decidida ainda: (a) exigir merge
+   fast-forward de `develop -> main` (sem commit de merge novo), ou (b)
+   comparar contra o primeiro parent do commit de merge em vez do próprio
+   HEAD. Decisão da usuária — não presumir qual.
+2. **Ticket 21** — proteção de `main` e merge manual — já não está mais
+   bloqueado por dependências (18 e 20 concluídos), mas herda o mesmo
+   achado: qualquer proteção de `main` que dependa de "HEAD de main = SHA
+   vinculado" precisa da mesma decisão do item 1 antes de ser implementada
+   em cima disso.

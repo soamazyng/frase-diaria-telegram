@@ -50,27 +50,6 @@ jobs:
         with:
           enable-cache: true
 
-      # DEBUG TEMPORÁRIO (ticket 20) — remover no próximo commit. O
-      # AGENTS.md proíbe presumir o claim `sub` do OIDC; já fomos
-      # surpreendidos duas vezes nesta sessão (formato imutável no ticket
-      # 18, formato "pull_request" ao investigar o ticket 19). A trust
-      # policy do papel de infraestrutura assume "ref:refs/heads/main" para
-      # `schedule`/`workflow_dispatch` (mesma suposição do ticket 16, nunca
-      # verificada contra um token real) — conferir antes de depender disso
-      # numa execução horária de verdade.
-      - name: "[debug] Ler claim sub do token OIDC real"
-        run: |
-          set -euo pipefail
-          resposta="$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")"
-          payload="$(echo "$resposta" | jq -r .value | cut -d'.' -f2)"
-          payload="$(echo "$payload" | tr '_-' '/+')"
-          case $((${#payload} % 4)) in
-            2) payload="${payload}==" ;;
-            3) payload="${payload}=" ;;
-          esac
-          echo "$payload" | base64 -d | jq '{sub, aud, ref}'
-
       - name: Configurar credenciais AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
