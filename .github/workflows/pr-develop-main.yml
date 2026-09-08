@@ -300,7 +300,15 @@ jobs:
         if: steps.checar-atualidade.outputs.publicar == 'sim'
         run: make publicar-app-artefato
         env:
-          VERSAO: ${{ github.sha }}
+          # TESTE DE FOGO DELIBERADO (ticket 19) — remover no próximo commit.
+          # Publica com um Versao propositalmente errado (só o rótulo
+          # cosmético de /health e do Output VersaoPublicada; o artefato e o
+          # código real continuam sendo o mesmo já testado em "verificar").
+          # Isso faz o diagnóstico reprovar de forma limpa e determinística
+          # (mismatch de versão), sem quebrar nenhum teste unitário nem
+          # comportamento real do bot, só para provar a recuperação de
+          # verdade contra AWS/GitHub reais.
+          VERSAO: quebrado-de-proposito-ticket-19
 
       - name: Verificar saúde, versão, dependências, webhook e agendamento
         # always(): mesmo que "sam deploy" tenha falhado, o CloudFormation
