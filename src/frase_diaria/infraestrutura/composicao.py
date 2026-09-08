@@ -10,8 +10,10 @@ from typing import Any
 
 import boto3
 
+from frase_diaria.aplicacao.criar_diaria import CriarDiaria
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
+from frase_diaria.aplicacao.reconciliar_pendencias import ReconciliarPendencias
 from frase_diaria.aplicacao.sincronizar_colecao import SincronizarColecao
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
 from frase_diaria.infraestrutura.despachante import DespachanteLambda
@@ -62,6 +64,14 @@ def _tabela() -> Any:
     return boto3.resource("dynamodb").Table(os.environ["TABELA_ESTADO"])
 
 
+def montar_despachante() -> DespachanteLambda:
+    """Acorda o worker; usado por toda entrada que não é o próprio worker."""
+    return DespachanteLambda(
+        nome_da_funcao=os.environ["FUNCAO_WORKER"],
+        cliente=boto3.client("lambda"),
+    )
+
+
 def montar_receber_comando() -> ReceberComando:
     """A fronteira HTTP: valida, registra e despacha — nunca entrega a frase."""
     guardados = segredos()
@@ -74,14 +84,30 @@ def montar_receber_comando() -> ReceberComando:
         repositorio=RepositorioDeComandosDynamo(tabela=_tabela()),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         relogio=RelogioDoSistema(),
-        pedidos=RepositorioDePedidosDynamo(
-            tabela=_tabela(), bot_legado=bot_legado
-        ),
+        pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
         bot=guardados["telegram-bot-token"].split(":", 1)[0],
-        despachante=DespachanteLambda(
-            nome_da_funcao=os.environ["FUNCAO_WORKER"],
-            cliente=boto3.client("lambda"),
-        ),
+        despachante=montar_despachante(),
+    )
+
+
+def montar_criar_diaria() -> CriarDiaria:
+    """Materializa o pedido diário — chamada pelo agendador e pelo reconciliador."""
+    guardados = segredos()
+    return CriarDiaria(
+        pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=_bot_legado(guardados)),
+        chat_id=int(guardados["telegram-chat-id"]),
+    )
+
+
+def montar_reconciliar_pendencias() -> ReconciliarPendencias:
+    """O reconciliador periódico: acorda pedidos vencidos e cobre a diária ausente."""
+    guardados = segredos()
+    bot_legado = _bot_legado(guardados)
+    return ReconciliarPendencias(
+        pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
+        despachante=montar_despachante(),
+        diaria=montar_criar_diaria(),
+        relogio=RelogioDoSistema(),
     )
 
 
@@ -114,9 +140,7 @@ def montar_processar_pedido() -> ProcessarPedido:
         sorteio=SorteioAleatorio(),
         relogio=relogio,
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
-        reserva=ReservaTransacional(
-            tabela=_tabela(), bot_legado=bot_legado
-        ),
+        reserva=ReservaTransacional(tabela=_tabela(), bot_legado=bot_legado),
     )
 
 

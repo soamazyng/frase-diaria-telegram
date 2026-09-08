@@ -8,6 +8,7 @@ from frase_diaria.aplicacao.portas import CriadorDePedidos, Relogio
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso, Recusa
 from frase_diaria.dominio.comando import Comando
 from frase_diaria.dominio.pedido import Origem, Pedido
+from frase_diaria.dominio.tempo import politica_do_extra
 from frase_diaria.telegram.atualizacao import Atualizacao, interpretar
 
 _log = logging.getLogger(__name__)
@@ -130,12 +131,16 @@ class ReceberComando:
         persistência. Responder no webhook exigiria trabalho em segundo plano
         depois da resposta HTTP, que a spec descarta.
         """
+        agora = self.relogio.agora()
+        politica = politica_do_extra(agora)
         pedido = Pedido(
             identidade=Pedido.identidade_de_extra(self.bot, update_id),
             origem=Origem.EXTRA,
             chat_id=chat_id,
+            prazo=politica.prazo,
+            tentativa_unica=politica.tentativa_unica,
         )
-        self.pedidos.criar_se_ausente(pedido, self.relogio.agora())
+        self.pedidos.criar_se_ausente(pedido, agora)
         # Acordar mesmo quando o pedido já existia: a execução anterior pode ter
         # criado o pedido e morrido antes do despacho, e o worker é idempotente.
         try:

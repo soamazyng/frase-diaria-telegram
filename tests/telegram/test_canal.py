@@ -66,6 +66,88 @@ def test_erro_http_nao_vaza_o_token_na_excecao(monkeypatch: pytest.MonkeyPatch) 
     assert "401" in mensagem
 
 
+def _erro_http(codigo: int, monkeypatch: pytest.MonkeyPatch) -> ErroDoTelegram:
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            url=requisicao.full_url, code=codigo, msg="erro", hdrs=Message(), fp=None
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+    with pytest.raises(ErroDoTelegram) as capturado:
+        TelegramHttp(token=TOKEN).enviar_texto(8340090374, "olá")
+    return capturado.value
+
+
+def test_credencial_invalida_e_permanente(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 401: token inválido — retentar não muda o resultado (AC13).
+    assert not _erro_http(401, monkeypatch).transitorio
+
+
+def test_bot_bloqueado_e_permanente(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 403: bot removido/bloqueado pela usuária — permanente até correção manual.
+    assert not _erro_http(403, monkeypatch).transitorio
+
+
+@pytest.mark.parametrize("codigo", [429, 500, 502, 503, 504])
+def test_codigos_transitorios_permitem_retentativa(
+    codigo: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    erro = _erro_http(codigo, monkeypatch)
+    assert erro.transitorio
+    assert erro.codigo_http == codigo
+
+
+def test_retry_after_e_extraido_do_corpo_do_erro_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    corpo = json.dumps(
+        {
+            "ok": False,
+            "error_code": 429,
+            "description": "Too Many Requests",
+            "parameters": {"retry_after": 7},
+        }
+    ).encode()
+
+    class RespostaDeErro:
+        def read(self) -> bytes:
+            return corpo
+
+        def close(self) -> None:
+            pass
+
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            url=requisicao.full_url,
+            code=429,
+            msg="Too Many Requests",
+            hdrs=Message(),
+            fp=RespostaDeErro(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    with pytest.raises(ErroDoTelegram) as capturado:
+        TelegramHttp(token=TOKEN).enviar_texto(8340090374, "olá")
+
+    assert capturado.value.retry_after_s == 7
+
+
+def test_corpo_de_erro_ilegivel_nao_impede_a_classificacao(monkeypatch: pytest.MonkeyPatch) -> None:
+    # O corpo do erro é só um extra de conveniência; sem ele, ainda sabemos o
+    # código HTTP e se é transitório.
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            url=requisicao.full_url, code=500, msg="erro", hdrs=Message(), fp=None
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    with pytest.raises(ErroDoTelegram) as capturado:
+        TelegramHttp(token=TOKEN).enviar_texto(8340090374, "olá")
+
+    assert capturado.value.transitorio
+    assert capturado.value.retry_after_s is None
+
+
 def test_erro_de_rede_nao_vaza_o_token(monkeypatch: pytest.MonkeyPatch) -> None:
     def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
         raise urllib.error.URLError(f"falha ao conectar em {requisicao.full_url}")

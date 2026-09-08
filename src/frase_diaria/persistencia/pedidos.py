@@ -58,6 +58,7 @@ class RepositorioDePedidosDynamo:
                     "estado_atual": pedido.estado.value,
                     "motivo_do_estado": pedido.motivo_do_estado,
                     "criado_em": em_utc(instante).isoformat(timespec="microseconds"),
+                    "tentativa_unica": pedido.tentativa_unica,
                     **(
                         {}
                         if pedido.estado.terminal
@@ -67,6 +68,11 @@ class RepositorioDePedidosDynamo:
                                 timespec="microseconds"
                             ),
                         }
+                    ),
+                    **(
+                        {"prazo": em_utc(pedido.prazo).isoformat(timespec="microseconds")}
+                        if pedido.prazo is not None
+                        else {}
                     ),
                 },
                 ConditionExpression="attribute_not_exists(pk)",
@@ -94,6 +100,8 @@ class RepositorioDePedidosDynamo:
                 if item.get("processar_em")
                 else None
             ),
+            prazo=(em_utc(datetime.fromisoformat(item["prazo"])) if item.get("prazo") else None),
+            tentativa_unica=bool(item.get("tentativa_unica", False)),
         )
         # Uma versão antiga pode avançar o estado sem conhecer estado_atual.
         if pedido.estado_legado != item["estado"]:

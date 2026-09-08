@@ -5,6 +5,7 @@ requisição), e uma parte só conta como entregue quando o Telegram confirmou *
 a confirmação foi persistida.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -112,13 +113,16 @@ class RepositorioFalso:
 
 
 class CanalEspiao:
-    def __init__(self, falhar_na_parte: int | None = None) -> None:
+    def __init__(
+        self, falhar_na_parte: int | None = None, erro: ErroDoTelegram | None = None
+    ) -> None:
         self.enviados: list[str] = []
         self.falhar_na_parte = falhar_na_parte
+        self.erro = erro if erro is not None else ErroDoTelegram("Bot API respondeu HTTP 500")
 
     def enviar_texto(self, chat_id: int, texto: str) -> int:
         if self.falhar_na_parte is not None and len(self.enviados) == self.falhar_na_parte:
-            raise ErroDoTelegram("Bot API respondeu HTTP 500")
+            raise self.erro
         self.enviados.append(texto)
         return 900 + len(self.enviados)
 
@@ -289,6 +293,31 @@ def test_a_tentativa_falha_guarda_o_erro_sanitizado() -> None:
     tentativa = repositorio.tentativas[-1]
     assert tentativa["resultado"] == "falhou"
     assert "HTTP 500" in tentativa["erro"]
+
+
+# --- observabilidade de atraso (ticket 14) ------------------------------------
+
+
+def test_tentativa_muito_atrasada_e_registrada(caplog: pytest.LogCaptureFixture) -> None:
+    atrasado = replace(_pedido_pendente(), proxima_tentativa=INSTANTE - timedelta(minutes=20))
+    repositorio = RepositorioFalso(atrasado)
+
+    with caplog.at_level("WARNING"):
+        _worker(repositorio, CanalEspiao()).executar("extra#42")
+
+    assert any("atrasada" in registro.message for registro in caplog.records)
+
+
+def test_tentativa_dentro_do_limite_nao_e_registrada_como_atraso(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    no_prazo = replace(_pedido_pendente(), proxima_tentativa=INSTANTE - timedelta(minutes=5))
+    repositorio = RepositorioFalso(no_prazo)
+
+    with caplog.at_level("WARNING"):
+        _worker(repositorio, CanalEspiao()).executar("extra#42")
+
+    assert not any("atrasada" in registro.message for registro in caplog.records)
 
 
 # --- retomada ----------------------------------------------------------------
@@ -745,6 +774,185 @@ def test_lease_perdido_no_meio_do_envio_abandona_sem_reenviar() -> None:
 
     assert resultado is pendente
     assert repositorio.tentativas[-1]["resultado"] == "superado"
+
+
+# --- janela e retentativa (ticket 14) -----------------------------------------
+
+
+def test_erro_transitorio_agenda_nova_tentativa_em_vez_de_falhar() -> None:
+    repositorio = RepositorioFalso(_pedido_pendente())
+    erro = ErroDoTelegram("Bot API respondeu HTTP 500", codigo_http=500, transitorio=True)
+    canal = CanalEspiao(falhar_na_parte=0, erro=erro)
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert resultado.frase_reservada == "bloco-1"  # a reserva não é liberada
+    assert resultado.proxima_tentativa is not None
+    assert resultado.proxima_tentativa > INSTANTE
+
+
+def test_erro_transitorio_respeita_o_retry_after_do_telegram() -> None:
+    repositorio = RepositorioFalso(_pedido_pendente())
+    erro = ErroDoTelegram("Bot API recusou: 429", transitorio=True, retry_after_s=7)
+    canal = CanalEspiao(falhar_na_parte=0, erro=erro)
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.proxima_tentativa == INSTANTE + timedelta(seconds=7)
+
+
+def test_erro_transitorio_apos_o_prazo_encerra_em_vez_de_retentar() -> None:
+    pedido = replace(_pedido_pendente(), prazo=INSTANTE - timedelta(minutes=1))
+    repositorio = RepositorioFalso(pedido)
+    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    canal = CanalEspiao(falhar_na_parte=0, erro=erro)
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado.terminal
+    assert resultado.estado is not EstadoDoPedido.AGUARDANDO_TENTATIVA
+
+
+def test_erro_permanente_continua_terminal_mesmo_com_prazo_no_futuro() -> None:
+    # Regressão: um erro permanente não deve virar retentativa só porque ainda
+    # há tempo na janela — a distinção é o tipo do erro, não o relógio (AC13).
+    pedido = replace(_pedido_pendente(), prazo=INSTANTE + timedelta(hours=1))
+    repositorio = RepositorioFalso(pedido)
+    canal = CanalEspiao(falhar_na_parte=0)  # erro padrão: transitorio=False
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.FALHOU
+
+
+def test_prazo_esgotado_antes_de_qualquer_envio_expira_o_pedido() -> None:
+    pedido = replace(_pedido_pendente().reservar("bloco-1"), prazo=INSTANTE - timedelta(minutes=1))
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+    canal = CanalEspiao()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert resultado.frase_reservada is None
+    assert canal.enviados == []
+    assert ciclos.ciclo.reservadas == frozenset()
+
+
+def test_prazo_esgotado_com_parte_ja_enviada_vira_parcial() -> None:
+    pedido = replace(
+        _pedido_pendente().reservar("bloco-1").iniciar_envio(),
+        prazo=INSTANTE - timedelta(minutes=1),
+    )
+    repositorio = RepositorioFalso(pedido)
+    repositorio.partes.append({"indice": 0, "texto": "parte um", "message_id": 901})
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+    canal = CanalEspiao()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.PARCIAL
+    assert resultado.frase_reservada == "bloco-1"
+    assert canal.enviados == []  # a janela fechou antes de tentar a parte restante
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+
+
+def test_prazo_e_checado_por_parte_nao_so_uma_vez_por_execucao() -> None:
+    """Regressão: uma frase de duas partes pode atravessar o prazo no meio do envio.
+
+    O relógio avança a partir do envio da primeira parte (estado observável do
+    canal-espião, não uma contagem de chamadas): a checagem antes da segunda
+    parte já encontra o prazo vencido, mesmo a tentativa tendo começado dentro
+    da janela (CLAUDE.md: checar antes de CADA chamada ao Telegram).
+    """
+
+    class CanalQueAtrasaAposEnviar:
+        def __init__(self) -> None:
+            self.enviados: list[str] = []
+
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            self.enviados.append(texto)
+            return 900 + len(self.enviados)
+
+    class RelogioQueAvancaAposUmEnvio:
+        def __init__(self, canal: CanalQueAtrasaAposEnviar) -> None:
+            self._canal = canal
+
+        def agora(self) -> datetime:
+            return INSTANTE if not self._canal.enviados else INSTANTE + timedelta(minutes=5)
+
+    pedido = replace(_pedido_pendente(), prazo=INSTANTE + timedelta(minutes=1))
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria()
+    canal = CanalQueAtrasaAposEnviar()
+    worker = ProcessarPedido(
+        repositorio=repositorio,
+        fonte=FonteFixa(),
+        canal=canal,
+        sorteio=SorteioPrevisivel(),
+        relogio=RelogioQueAvancaAposUmEnvio(canal),
+        ciclos=ciclos,
+        reserva=ReservaEmMemoria(ciclos, repositorio),
+    )
+
+    resultado = worker.executar("extra#42")
+
+    assert resultado is not None
+    assert canal.enviados == ["parte um"]  # a segunda parte nunca foi tentada
+    assert resultado.estado is EstadoDoPedido.PARCIAL
+
+
+# --- extra de tentativa única (ticket 14) --------------------------------------
+
+
+def test_extra_de_tentativa_unica_ainda_faz_a_tentativa_imediata() -> None:
+    """Regressão (achado do code-review): sem isto, um extra criado a partir do
+    meio-dia local nunca chegava a chamar o Telegram — o despacho é sempre
+    um pouco posterior à criação, e um prazo baseado no instante de criação
+    era sempre "ultrapassado" já na primeira checagem."""
+    pedido = replace(_pedido_pendente(), prazo=None, tentativa_unica=True)
+    repositorio = RepositorioFalso(pedido)
+
+    resultado = _worker(repositorio, CanalEspiao()).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.ENVIADO
+
+
+def test_extra_de_tentativa_unica_nao_retenta_erro_transitorio() -> None:
+    pedido = replace(_pedido_pendente(), prazo=None, tentativa_unica=True)
+    repositorio = RepositorioFalso(pedido)
+    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    canal = CanalEspiao(falhar_na_parte=0, erro=erro)
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.FALHOU  # terminal: não retenta
+
+
+def test_primeiro_backoff_transitorio_e_a_base_sem_dobrar() -> None:
+    # Regressão (achado do code-review): sequencial=1 é a primeira tentativa, e
+    # o primeiro backoff deve ser BASE_DO_BACKOFF_S — não o dobro dela.
+    repositorio = RepositorioFalso(_pedido_pendente())
+    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    canal = CanalEspiao(falhar_na_parte=0, erro=erro)
+
+    resultado = _worker(repositorio, canal).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.proxima_tentativa is not None
+    atraso = (resultado.proxima_tentativa - INSTANTE).total_seconds()
+    base = ProcessarPedido.BASE_DO_BACKOFF_S
+    assert base <= atraso <= base * 1.1  # base + até 10% de dispersão
 
 
 def test_conflito_ao_consumir_rele_o_ciclo_e_tenta_de_novo() -> None:

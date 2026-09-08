@@ -114,6 +114,16 @@ class ProcessarPedido:
     # tempo; sem dispersão, todos relêem e tentam de novo juntos, colidindo de
     # novo. Um jitter pequeno já quebra essa sincronia (achado do code-review).
     ESPERA_MAXIMA_ENTRE_TENTATIVAS_S: ClassVar[float] = 0.02
+    # Espera progressiva entre tentativas após um erro transitório do Telegram
+    # (AC13): dobra a cada tentativa, com um teto para não deixar um pedido
+    # preso a um atraso enorme, e uma dispersão para não sincronizar retentativas
+    # de pedidos diferentes que falharam no mesmo instante.
+    BASE_DO_BACKOFF_S: ClassVar[float] = 30.0
+    TETO_DO_BACKOFF_S: ClassVar[float] = 900.0
+    # Observabilidade (spec, 4.8): quando uma tentativa roda bem depois do
+    # instante em que estava agendada, vale registrar — sinal de fila
+    # acumulando ou disparo atrasado, não de um comportamento errado.
+    LIMITE_DE_ATRASO: ClassVar[timedelta] = timedelta(minutes=15)
 
     def executar(self, identidade: str) -> Pedido | None:
         pedido = self.repositorio.obter(identidade)
@@ -123,8 +133,16 @@ class ProcessarPedido:
         if pedido.estado.terminal:
             # Estado terminal não reabre: um disparo duplicado não reenvia.
             return pedido
-        if pedido.proxima_tentativa is not None and pedido.proxima_tentativa > self.relogio.agora():
+        agora = self.relogio.agora()
+        if pedido.proxima_tentativa is not None and pedido.proxima_tentativa > agora:
             return pedido
+        if pedido.proxima_tentativa is not None and agora - pedido.proxima_tentativa > (
+            self.LIMITE_DE_ATRASO
+        ):
+            _log.warning(
+                "tentativa atrasada em mais de %d minutos além do agendado",
+                self.LIMITE_DE_ATRASO.total_seconds() // 60,
+            )
 
         sequencial = self.repositorio.registrar_tentativa(
             pedido.identidade, "iniciada", None, self.relogio.agora()
@@ -269,6 +287,28 @@ class ProcessarPedido:
         identidade, ciclo = escolha
         return por_identidade[identidade], ciclo
 
+    def _encerrar_por_janela_esgotada(
+        self, pedido: Pedido, ciclo: Ciclo, versao_ciclo: int, sequencial: int
+    ) -> Pedido:
+        """O prazo do pedido já passou: abandona em vez de tentar entregar.
+
+        Nada enviado ainda vira EXPIRADO — mais preciso que FALHOU para "o tempo
+        acabou", sem confundir com uma recusa do Telegram. Alguma parte já
+        confirmada precisa continuar PARCIAL, com a mesma ressalva de consumo de
+        qualquer outra entrega incompleta (spec, 4.4; AC14).
+        """
+        motivo = "janela de recuperação encerrada"
+        alguma_enviada = bool(self.repositorio.indices_confirmados(pedido.identidade))
+        encerrado = (
+            pedido.falhar(alguma_parte_enviada=True, motivo=motivo)
+            if alguma_enviada
+            else pedido.expirar(motivo)
+        )
+        self.repositorio.salvar(encerrado, sequencial)
+        if pedido.frase_reservada is not None:
+            self._encerrar_no_ciclo(ciclo, versao_ciclo, pedido.frase_reservada, alguma_enviada)
+        return encerrado
+
     def _encerrar_sem_conteudo(
         self, pedido: Pedido, ciclo: Ciclo, versao_ciclo: int, sequencial: int
     ) -> Pedido:
@@ -378,6 +418,11 @@ class ProcessarPedido:
         for indice, texto in enumerate(frase.partes):
             if indice in ja_confirmadas or indice in ja_incertas:
                 continue
+            # Checado imediatamente antes de cada chamada ao Telegram, não uma
+            # vez só por execução: uma frase de várias partes pode atravessar o
+            # prazo no meio do envio (spec, 4.5; AC14).
+            if pedido.prazo is not None and self.relogio.agora() > pedido.prazo:
+                return self._encerrar_por_janela_esgotada(pedido, ciclo, versao_ciclo, sequencial)
             indices_intencoes: set[int] = getattr(
                 self.repositorio, "indices_intencoes", lambda *_: set()
             )(pedido.identidade)
@@ -393,6 +438,18 @@ class ProcessarPedido:
                 message_id = self.canal.enviar_texto(pedido.chat_id, texto)
             except ErroDoTelegram as erro:
                 # A mensagem já vem sanitizada do canal: sem token, sem URL.
+                # Tentativa única (extra a partir do meio-dia local) não retenta
+                # nem diante de erro transitório — é a própria tentativa, não uma
+                # entre várias (spec, 4.5).
+                if (
+                    erro.transitorio
+                    and not pedido.tentativa_unica
+                    and (pedido.prazo is None or self.relogio.agora() < pedido.prazo)
+                ):
+                    proximo = self._proximo_instante_de_tentativa(sequencial, erro.retry_after_s)
+                    return self._reagendar_apos_falha_transitoria(
+                        pedido, str(erro), sequencial, proximo
+                    )
                 return self._encerrar_com_falha(
                     pedido, str(erro), alguma_enviada, ciclo, versao_ciclo, sequencial
                 )
@@ -418,6 +475,43 @@ class ProcessarPedido:
         # Consumo definitivo: todas as partes confirmadas.
         self._consumir_no_ciclo(ciclo, versao_ciclo, frase.identidade, com_ressalva=False)
         return concluido
+
+    def _proximo_instante_de_tentativa(
+        self, sequencial: int, retry_after_s: float | None
+    ) -> datetime:
+        """Espera progressiva com teto e dispersão, respeitando o retry_after do Telegram.
+
+        `sequencial` já é a tentativa monotônica deste pedido (de
+        `registrar_tentativa`); usá-lo como expoente evita persistir uma
+        contagem separada só para o backoff. Ele conta toda tentativa do
+        pedido, não só as que erraram por um `ErroDoTelegram` transitório — uma
+        retentativa por contenção de ciclo antes do primeiro erro do Telegram já
+        infla o expoente. Aceito de propósito: o teto (`TETO_DO_BACKOFF_S`)
+        limita o efeito, e a alternativa exigiria persistir uma contagem à parte
+        só para este cálculo.
+        """
+        if retry_after_s is not None:
+            atraso = float(retry_after_s)
+        else:
+            # sequencial=1 (primeira tentativa) já é a primeira falha possível:
+            # o expoente começa em zero para que o primeiro backoff seja
+            # BASE_DO_BACKOFF_S, não o dobro.
+            atraso = min(self.BASE_DO_BACKOFF_S * (2 ** (sequencial - 1)), self.TETO_DO_BACKOFF_S)
+            atraso += random.uniform(0, atraso * 0.1)
+        return self.relogio.agora() + timedelta(seconds=atraso)
+
+    def _reagendar_apos_falha_transitoria(
+        self, pedido: Pedido, motivo: str, sequencial: int, proximo: datetime
+    ) -> Pedido:
+        """Erro transitório do Telegram: mantém a reserva e tenta de novo mais tarde.
+
+        Diferente de uma falha definitiva, nada é liberado nem consumido no
+        ciclo aqui — a próxima tentativa reaproveita exatamente a mesma reserva
+        (spec, 4.4; AC13).
+        """
+        reagendado = pedido.aguardar_tentativa(erro_sanitizado(motivo), proximo)
+        self.repositorio.salvar(reagendado, sequencial)
+        return reagendado
 
     def _marcar_incerto(
         self,

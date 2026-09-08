@@ -12,6 +12,7 @@ import pytest
 
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
+from frase_diaria.dominio.tempo import politica_do_extra
 
 SEGREDO = "segredo-certo"
 CHAT = 8340090374
@@ -212,6 +213,18 @@ def test_frase_cria_pedido_extra_e_acorda_o_worker() -> None:
     assert pedidos.criados[0].identidade == "extra#principal#77"
     assert pedidos.criados[0].chat_id == CHAT
     assert despachante.acordados == ["extra#principal#77"]
+
+
+def test_frase_extra_nasce_com_a_politica_de_retentativa_do_instante_de_criacao() -> None:
+    pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
+
+    _caso_com_pedidos(pedidos, despachante).executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", update_id=77)
+    )
+
+    politica = politica_do_extra(RelogioFixo().agora())
+    assert pedidos.criados[0].prazo == politica.prazo
+    assert pedidos.criados[0].tentativa_unica == politica.tentativa_unica
 
 
 def test_frase_nao_responde_no_webhook() -> None:

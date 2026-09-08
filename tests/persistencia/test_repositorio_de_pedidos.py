@@ -79,6 +79,48 @@ def test_salva_e_recupera_preservando_o_estado(repositorio: Any) -> None:
     assert recuperado.motivo_do_estado == "frase reservada"
 
 
+def test_o_prazo_sobrevive_a_gravar_e_recuperar(repositorio: Any) -> None:
+    prazo = datetime(2026, 9, 7, 15, 0, tzinfo=UTC)
+    pedido = replace(PEDIDO, prazo=prazo)
+
+    repositorio.criar_se_ausente(pedido, INSTANTE)
+
+    assert repositorio.obter(PEDIDO.identidade).prazo == prazo
+
+
+def test_pedido_sem_prazo_gravado_recupera_prazo_none(repositorio: Any) -> None:
+    # Compatibilidade retroativa: pedidos de antes deste campo não têm `prazo`.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+
+    assert repositorio.obter(PEDIDO.identidade).prazo is None
+
+
+def test_salvar_nao_apaga_o_prazo_gravado_na_criacao(repositorio: Any) -> None:
+    prazo = datetime(2026, 9, 7, 15, 0, tzinfo=UTC)
+    pedido = replace(PEDIDO, prazo=prazo)
+    repositorio.criar_se_ausente(pedido, INSTANTE)
+
+    repositorio.salvar(pedido.reservar("bloco-7"))
+
+    assert repositorio.obter(PEDIDO.identidade).prazo == prazo
+
+
+def test_tentativa_unica_sobrevive_a_gravar_e_recuperar(repositorio: Any) -> None:
+    pedido = replace(PEDIDO, tentativa_unica=True)
+
+    repositorio.criar_se_ausente(pedido, INSTANTE)
+
+    assert repositorio.obter(PEDIDO.identidade).tentativa_unica is True
+
+
+def test_pedido_sem_tentativa_unica_gravada_recupera_false(repositorio: Any) -> None:
+    # Compatibilidade retroativa: pedidos de antes deste campo assumem False,
+    # o mesmo comportamento (retentativa permitida) que já tinham.
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+
+    assert repositorio.obter(PEDIDO.identidade).tentativa_unica is False
+
+
 def test_criar_e_idempotente_por_identidade(repositorio: Any) -> None:
     assert repositorio.criar_se_ausente(PEDIDO, INSTANTE) is True
     assert repositorio.criar_se_ausente(PEDIDO, INSTANTE) is False

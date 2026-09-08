@@ -82,6 +82,17 @@ class Pedido:
     frase_reservada: str | None = None
     motivo_do_estado: str = "pedido criado"
     proxima_tentativa: datetime | None = None
+    # Instante-limite (UTC) após o qual o pedido é abandonado em vez de retentado.
+    # None significa "sem prazo conhecido" — só ocorre em pedidos persistidos
+    # antes deste campo existir, ou num extra de tentativa única (abaixo), cujo
+    # prazo não é uma data: é a ausência de qualquer retentativa.
+    prazo: datetime | None = None
+    # Um extra criado a partir do meio-dia local tem uma tentativa imediata, sem
+    # retentativa nenhuma — nem mesmo diante de um erro transitório do Telegram
+    # (spec, 4.5). `prazo` não expressa isso: o despacho é sempre um pouco
+    # posterior à criação, e um prazo próximo dela seria ultrapassado antes da
+    # própria tentativa única rodar.
+    tentativa_unica: bool = False
 
     @property
     def estado_legado(self) -> str:
@@ -163,12 +174,24 @@ class Pedido:
             frase_reservada=self.frase_reservada,
         )
 
-    def aguardar_tentativa(self, motivo: str) -> "Pedido":
-        return self._transicionar(
+    def aguardar_tentativa(
+        self, motivo: str, proxima_tentativa: datetime | None = None
+    ) -> "Pedido":
+        """Sai de circulação até `proxima_tentativa`, sem perder a reserva.
+
+        Sem um `proxima_tentativa` explícito, o instante já persistido é mantido
+        — é o caso da retentativa por contenção de ciclo (ticket 09), que não
+        precisa de espera progressiva. Um erro transitório do Telegram (ticket
+        14) passa o instante calculado com a espera progressiva.
+        """
+        pedido = self._transicionar(
             EstadoDoPedido.AGUARDANDO_TENTATIVA,
             motivo,
             frase_reservada=self.frase_reservada,
         )
+        if proxima_tentativa is not None:
+            pedido = replace(pedido, proxima_tentativa=proxima_tentativa)
+        return pedido
 
     def liberar_frase_excluida(self, motivo: str) -> "Pedido":
         """Sai de uma reserva cuja frase sumiu da fonte, sem terminar o pedido.
@@ -226,8 +249,15 @@ class Pedido:
         )
 
     def expirar(self, motivo: str) -> "Pedido":
+        """Abandona o pedido sem que nada tenha sido entregue.
+
+        Libera a reserva, como `falhar(alguma_parte_enviada=False)` — mesma
+        regra, "nada enviado libera a frase" (spec, 4.4). Quando alguma parte já
+        foi confirmada, o encerramento correto é `falhar(alguma_parte_enviada=True)`
+        (PARCIAL), não este.
+        """
         return self._transicionar(
             EstadoDoPedido.EXPIRADO,
             motivo,
-            frase_reservada=self.frase_reservada,
+            frase_reservada=None,
         )

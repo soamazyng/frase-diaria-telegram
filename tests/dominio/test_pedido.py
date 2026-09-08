@@ -5,7 +5,7 @@ está o mínimo que o tracer bullet exige, com o vocabulário definitivo para qu
 07 estenda em vez de renomear.
 """
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -128,6 +128,32 @@ def test_aguardar_tentativa_e_retomar_o_envio() -> None:
     assert retomado.estado is EstadoDoPedido.ENVIANDO
 
 
+def test_aguardar_tentativa_sem_novo_prazo_preserva_o_proximo_instante() -> None:
+    # A retentativa por contenção de ciclo (ticket 09) não muda o agendamento.
+    original = date(2026, 9, 7)
+    pedido = Pedido(
+        identidade="diaria#123#2026-09-07",
+        origem=Origem.DIARIA,
+        chat_id=123,
+        proxima_tentativa=datetime(2026, 9, 7, 11, 0, tzinfo=UTC),
+    )
+    assert original  # apenas para deixar claro que a data não participa aqui
+
+    aguardando = pedido.aguardar_tentativa("todas as frases estão reservadas")
+
+    assert aguardando.proxima_tentativa == datetime(2026, 9, 7, 11, 0, tzinfo=UTC)
+
+
+def test_aguardar_tentativa_pode_agendar_um_novo_proximo_instante() -> None:
+    # Erro transitório do Telegram: o worker calcula o próximo instante com
+    # espera progressiva e o passa explicitamente (ticket 14).
+    proximo = datetime(2026, 9, 7, 11, 5, tzinfo=UTC)
+
+    aguardando = _pedido().aguardar_tentativa("Bot API respondeu HTTP 500", proximo)
+
+    assert aguardando.proxima_tentativa == proximo
+
+
 def test_liberar_frase_excluida_volta_para_antes_da_reserva() -> None:
     # A frase reservada sumiu da fonte antes de qualquer parte enviada: volta a
     # um estado que aceita reservar outra, sem terminar o pedido (spec, 4.2).
@@ -173,6 +199,34 @@ def test_pedido_pode_expirar_com_motivo() -> None:
     assert expirado.estado is EstadoDoPedido.EXPIRADO
     assert expirado.motivo_do_estado == "janela de recuperação encerrada"
     assert expirado.estado.terminal
+
+
+def test_expirar_libera_a_reserva_como_uma_falha_sem_envio() -> None:
+    # Mesma regra de falhar(alguma_parte_enviada=False): nada foi entregue,
+    # então a frase volta a ficar elegível para outro pedido (spec, 4.4).
+    expirado = _pedido().reservar("bloco-7").expirar("janela de recuperação encerrada")
+
+    assert expirado.frase_reservada is None
+
+
+def test_pedido_nasce_sem_prazo_por_padrao() -> None:
+    # Pedidos persistidos antes deste ticket não têm prazo gravado; ausência de
+    # prazo nunca deve impedir uma retentativa (compatibilidade retroativa).
+    assert _pedido().prazo is None
+
+
+def test_pedido_nasce_sem_tentativa_unica_por_padrao() -> None:
+    assert _pedido().tentativa_unica is False
+
+
+def test_pedido_pode_nascer_com_um_prazo_explicito() -> None:
+    prazo = datetime(2026, 9, 7, 15, 0, tzinfo=UTC)
+
+    pedido = Pedido(
+        identidade="diaria#123#2026-09-07", origem=Origem.DIARIA, chat_id=123, prazo=prazo
+    )
+
+    assert pedido.prazo == prazo
 
 
 def test_transicao_invalida_e_rejeitada() -> None:

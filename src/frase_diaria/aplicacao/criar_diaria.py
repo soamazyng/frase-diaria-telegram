@@ -3,23 +3,30 @@ from datetime import datetime
 
 from frase_diaria.aplicacao.portas import CriadorDePedidos
 from frase_diaria.dominio.pedido import Origem, Pedido
-from frase_diaria.dominio.tempo import dia_local, em_utc
+from frase_diaria.dominio.tempo import dia_local, em_utc, prazo_da_diaria
 
 
 @dataclass(frozen=True)
 class CriarDiaria:
-    """Materializa o dia solicitado; o agendador será conectado no ticket 14."""
+    """Materializa o pedido diário do dia local do instante do disparo.
+
+    Chamada tanto pelo agendador quanto pelo reconciliador (ticket 14): a
+    identidade (conversa autorizada + dia local) torna as duas entradas
+    idempotentes, então repetir a chamada nunca duplica a diária.
+    """
 
     pedidos: CriadorDePedidos
     chat_id: int
 
     def executar(self, instante_do_evento: datetime) -> str:
         instante = em_utc(instante_do_evento)
+        dia = dia_local(instante)
         pedido = Pedido(
-            identidade=Pedido.identidade_de_diaria(self.chat_id, dia_local(instante)),
+            identidade=Pedido.identidade_de_diaria(self.chat_id, dia),
             origem=Origem.DIARIA,
             chat_id=self.chat_id,
             proxima_tentativa=instante,
+            prazo=prazo_da_diaria(dia),
         )
         self.pedidos.criar_se_ausente(pedido, instante)
         return pedido.identidade
