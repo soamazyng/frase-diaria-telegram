@@ -261,6 +261,51 @@ publicação malsucedida.
 Corrigido adicionando `astral-sh/setup-uv` ao job `publicar`, no mesmo
 ponto em que os outros dois jobs o têm. `actionlint`/`shellcheck` revalidados.
 
+## Quarta e quinta execuções reais — dois gaps de IAM na stack de aplicação
+
+Com OIDC e `uv` corrigidos, `sam deploy` chegou a rodar de verdade pela
+primeira vez. Faltava só permissão para o bucket gerenciado pelo SAM
+(`aws-sam-cli-managed-default`, criado no ticket 03): `AccessDenied` em
+`cloudformation:CreateChangeSet` sobre aquela stack. Corrigido dando ao
+papel de publicação acesso escopado por nome exato a essa stack e ao seu
+bucket (sem `CreateStack`/`UpdateStack` — o papel só confirma o estado de
+um recurso que já existe, nunca pode recriá-lo ou alterá-lo). Aplicado por
+change set revisado (`Modify`, sem substituição) — desta vez o classificador
+de segurança do Claude Code pausou a execução automática por ser mais uma
+mutação de IAM em sequência; confirmado explicitamente pela usuária antes
+de aplicar.
+
+Com essa permissão, o `sam deploy` real avançou até mudar a stack
+`frase-diaria-app` de verdade — e falhou de um jeito novo, dentro do
+`CREATE` dos dois recursos `AWS::Scheduler::Schedule`
+(`AgendadorDiarioAgendamento`, `ReconciliadorVarredura`): `AccessDenied` em
+`scheduler:GetSchedule`. À primeira vista parecia faltar essa ação na
+policy — mas ela **já estava lá** (`AgendamentosDaAplicacao`, ticket 16). O
+problema real: a policy escopa `Resource` para
+`schedule/default/${Prefixo}-*`, e como `infra/aplicacao.yaml` nunca deu um
+`Name:` explícito aos dois `ScheduleV2`, o CloudFormation gerou os nomes
+físicos `AgendadorDiarioAgendamento`/`ReconciliadorVarredura` — **sem** o
+prefixo `frase-diaria-`. O IAM sempre esteve certo; o template de aplicação
+é que nunca produzia um nome que batesse com ele. Isso nunca tinha
+aparecido porque estas duas funções nunca tinham sido publicadas de
+verdade antes (bloqueadas pelo mesmo bug do Makefile corrigido no início
+deste ticket) — outra instância do mesmo padrão: bug adormecido, exposto só
+ao exercitar a coisa real pela primeira vez.
+
+**A stack fez rollback automático e limpo** (`UPDATE_ROLLBACK_COMPLETE`,
+confirmado via `aws cloudformation describe-stacks`) — nenhum recurso
+ficou pela metade. Conferido também, não presumido: `aws scheduler
+list-schedules` não mostra nenhum agendamento órfão (o `CreateSchedule`
+subjacente nunca chegou a persistir, ou o próprio CloudFormation limpou).
+
+**Correção em `infra/aplicacao.yaml`, não no IAM desta vez:** os dois
+`ScheduleV2` ganharam `Name: !Sub "${Prefixo}-agendador-diario"` e
+`Name: !Sub "${Prefixo}-reconciliador"` — passa a bater com o escopo que a
+policy do ticket 16 sempre teve, sem alargar nenhuma permissão. `sam
+validate --lint` revalidado. Esta é uma mudança normal de aplicação, que o
+próprio pipeline publica no próximo push — não uma mutação manual de infra
+fora do fluxo do ticket 18.
+
 ## Verificação
 
 **Exercitado de verdade, não só lido:**

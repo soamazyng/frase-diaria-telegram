@@ -165,6 +165,14 @@ Resources:
         Agendamento:
           Type: ScheduleV2
           Properties:
+            # Nome explícito: sem ele, o CloudFormation gera o nome físico
+            # "AgendadorDiarioAgendamento" (sem o prefixo), e a policy IAM do
+            # papel de publicação (infra/bootstrap.yaml, escopada em
+            # schedule/default/${Prefixo}-*) nunca autoriza esse recurso —
+            # achado ao exercitar o pipeline de verdade pela primeira vez
+            # (ticket 18): create falhou com AccessDenied em
+            # scheduler:GetSchedule, CloudFormation fez rollback limpo.
+            Name: !Sub "${Prefixo}-agendador-diario"
             ScheduleExpression: "cron(0 8 * * ? *)"
             ScheduleExpressionTimezone: "America/Sao_Paulo"
             FlexibleTimeWindow:
@@ -206,6 +214,9 @@ Resources:
         Varredura:
           Type: ScheduleV2
           Properties:
+            # Mesmo motivo do Agendamento acima: nome explícito para casar
+            # com o escopo schedule/default/${Prefixo}-* do IAM.
+            Name: !Sub "${Prefixo}-reconciliador"
             ScheduleExpression: "rate(5 minutes)"
             FlexibleTimeWindow:
               Mode: "OFF"
