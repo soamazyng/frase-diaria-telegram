@@ -145,6 +145,49 @@ terceiro — não há sink de injeção real —, mas a skill
 quando o valor atual é seguro, como defesa em profundidade contra uma
 mudança futura de formato. Aplicado nos quatro pontos encontrados.
 
+## Publicação real — primeira execução
+
+Após autorização explícita da usuária, o commit foi enviado para `develop`
+de verdade (`gh run` `34260448739`). `garantir-pr`, `verificar` e `construir`
+passaram; `publicar` **falhou** na conferência de checksum, antes de
+qualquer credencial AWS ser configurada — ou seja, o mecanismo de segurança
+funcionou exatamente como desenhado: nenhuma mutação chegou a acontecer.
+
+**Causa raiz, achada comparando os dois checksums reais (não presumida):**
+cada diretório de função (`Funcao/`, `Worker/`, `AgendadorDiario/`,
+`Reconciliador/`) tinha um arquivo oculto `.lock` (vazio, deixado por `uv
+pip install --target` como marcador de bloqueio do diretório de instalação).
+`actions/upload-artifact@v7` descarta arquivos ocultos por padrão
+(`include-hidden-files: false`, visível no log do passo). O checksum do job
+`construir` foi calculado **antes** do upload, com o `.lock` presente; o
+artefato realmente publicado **não o continha**; o recálculo em `publicar`,
+sobre o artefato baixado, portanto não batia.
+
+Confirmado passo a passo, não só lido no log: baixado o artefato exato do
+run com `gh run download`, reproduzido localmente o mesmo checksum
+`58ae56d8...` que o job `publicar` reportou (usando o mesmo prefixo de
+caminho do script), e localizados os quatro `.lock` que só existiam no
+build local, ausentes no artefato baixado.
+
+**Correção:** o `.lock` não tem uso em runtime — é bookkeeping do `uv`, um
+arquivo de 0 bytes. Adicionada ao `Makefile` (`build-Funcao ...`) a mesma
+limpeza já existente para `__pycache__`, removendo `.lock` antes de o build
+terminar. Reconstruído do zero localmente: zero itens ocultos remanescentes,
+checksum estável. Isso resolve a causa, não o sintoma — não foi ativado
+`include-hidden-files: true` no workflow, porque o artefato mais limpo
+(sem bookkeeping de ferramenta) é preferível a manter um arquivo inútil só
+para fazer o checksum bater.
+
+**Achado adicional, não um bug:** os dois checksums diferentes não indicam
+corrupção — o próprio Actions confirmou, de forma independente, que o ZIP
+chegou intacto (`SHA256 digest of uploaded artifact` = `SHA256 digest of
+downloaded artifact`, idênticos). A divergência era só entre o que o script
+do projeto contava antes e depois do upload, nunca entre o que foi enviado e
+o que chegou.
+
+Corrigido, commitado (`git commit` separado) e reenviado para `develop`; a
+segunda execução real está descrita no restante deste documento.
+
 ## Verificação
 
 **Exercitado de verdade, não só lido:**

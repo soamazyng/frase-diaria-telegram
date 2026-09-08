@@ -46,6 +46,15 @@ build-Funcao build-Worker build-AgendadorDiario build-Reconciliador:
 	cp -r src/frase_diaria "$(ARTIFACTS_DIR)/"
 	rm -f "$(ARTIFACTS_DIR)/requirements.txt"
 	find "$(ARTIFACTS_DIR)" -name __pycache__ -type d -prune -exec rm -rf {} +
+	# .lock: marcador vazio que `uv pip install --target` deixa para trás,
+	# sem uso em runtime. Achado ao exercitar o pipeline de verdade (ticket
+	# 18): por ser oculto, `actions/upload-artifact` o descarta por padrão
+	# (`include-hidden-files: false`), então o checksum calculado antes do
+	# upload (com o .lock) nunca batia com o recalculado depois do download
+	# (sem ele) — a publicação era corretamente bloqueada, mas por um
+	# arquivo irrelevante. Removê-lo aqui torna o artefato limpo e o
+	# checksum estável nas duas pontas.
+	find "$(ARTIFACTS_DIR)" -name '.lock' -type f -delete
 
 .PHONY: publicar-dados publicar-app validar-sam construir-app publicar-app-artefato
 
