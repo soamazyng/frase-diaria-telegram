@@ -300,15 +300,7 @@ jobs:
         if: steps.checar-atualidade.outputs.publicar == 'sim'
         run: make publicar-app-artefato
         env:
-          # TESTE DE FOGO DELIBERADO (ticket 19) — remover no próximo commit.
-          # Publica com um Versao propositalmente errado (só o rótulo
-          # cosmético de /health e do Output VersaoPublicada; o artefato e o
-          # código real continuam sendo o mesmo já testado em "verificar").
-          # Isso faz o diagnóstico reprovar de forma limpa e determinística
-          # (mismatch de versão), sem quebrar nenhum teste unitário nem
-          # comportamento real do bot, só para provar a recuperação de
-          # verdade contra AWS/GitHub reais.
-          VERSAO: quebrado-de-proposito-ticket-19
+          VERSAO: ${{ github.sha }}
 
       - name: Verificar saúde, versão, dependências, webhook e agendamento
         # always(): mesmo que "sam deploy" tenha falhado, o CloudFormation
@@ -359,7 +351,15 @@ jobs:
           echo "sha=$shaRecuperacao" >> "$GITHUB_OUTPUT"
 
       - name: Recuperar publicação saudável anterior
-        if: steps.localizar-recuperacao.outputs.sha != ''
+        # always(): sem isso, o GitHub Actions insere um success() implícito
+        # em qualquer `if:` que não use always()/failure()/cancelled()
+        # explicitamente — e como o passo "diagnostico" anterior já falhou
+        # (é exatamente por isso que chegamos aqui), esse success() implícito
+        # bloquearia este passo mesmo com o SHA de recuperação já achado.
+        # Achado ao vivo (ticket 19: teste de fogo real) — o passo ficava
+        # "skipped" mesmo com steps.localizar-recuperacao.outputs.sha
+        # preenchido, e a cadeia caía direto em desabilitar o agendamento.
+        if: always() && steps.localizar-recuperacao.outputs.sha != ''
         id: recuperar
         env:
           SHA_RECUPERACAO: ${{ steps.localizar-recuperacao.outputs.sha }}
@@ -409,7 +409,8 @@ jobs:
           fi
 
       - name: Verificar publicação recuperada
-        if: steps.recuperar.outputs.sucesso == 'sim'
+        # always(): mesmo motivo do passo "Recuperar" acima.
+        if: always() && steps.recuperar.outputs.sucesso == 'sim'
         id: diagnostico-recuperacao
         uses: ./.github/actions/diagnosticar-publicacao
         with:
