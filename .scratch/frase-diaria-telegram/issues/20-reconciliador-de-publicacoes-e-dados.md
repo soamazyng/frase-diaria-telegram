@@ -4,12 +4,18 @@
 
 **Blocked by:** 19 — Recuperação da versão anterior, caso a caso.
 
-**Status:** implementado em 2026-09-08, não exercitado ao vivo — ver
-`docs/20-reconciliador-de-publicacoes-e-dados.md`. GitHub só ativa
-`schedule`/`workflow_dispatch` a partir da branch padrão (`main`); como o
-workflow só existe em `develop` até o merge do PR #2, nem o disparo manual
-de teste nem o cron horário podem rodar ainda — limitação estrutural, não
-pendência de implementação.
+**Status:** concluído em 2026-09-08 — ver
+`docs/20-reconciliador-de-publicacoes-e-dados.md`. Exercitado ao vivo após
+o merge do PR #2: claim `sub` do OIDC confirmado contra token real, passo
+de debug removido, caminho "implantação travada" exercitado sem
+incidente. O caminho "reconciliar para a versão estável" revelou um
+achado real — merge commit gera um SHA nunca testado, o que fez o
+reconciliador (e depois o próprio guard do ticket 18) tratar publicação
+saudável como candidata abandonada, chegando a desabilitar de verdade o
+agendamento diário como falso positivo; revertido na hora. Causa raiz
+corrigida (decisão da usuária: manter merge commit da spec 4.11, comparar
+contra o segundo parent do commit de merge em vez do HEAD literal) — ver
+"Correção definitiva da causa raiz" no documento.
 
 - [x] Um workflow periódico **de hora em hora** consulta o manifesto de publicação e o estado do PR, cobrindo runner interrompido e falha do evento de fechamento. *(implementado; só roda de verdade depois do merge para `main` — ver nota de status)*
 - [x] O reconciliador adquire a mesma exclusão mútua de produção antes de agir, e reconsulta o estado após esperar. *(mesmo `concurrency: group: producao-frase-diaria` dos tickets 18/19)*

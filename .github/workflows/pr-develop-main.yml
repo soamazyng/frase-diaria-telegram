@@ -248,12 +248,28 @@ jobs:
           fi
 
           # "Antes de publicar, exige-se que o conteúdo de develop inclua a
-          # base relevante de main" (checklist do ticket 18).
-          status="$(gh api "repos/$GH_REPO/compare/main...develop" --jq .status)"
+          # base relevante de main" (checklist do ticket 18). "Base
+          # relevante" não é o HEAD literal de main: a spec (4.11) propõe
+          # merge commit preservando o histórico de dev, e um commit de
+          # merge nunca passa pelo pipeline — comparar contra ele quebra
+          # sempre que um PR é mergeado (achado ao vivo em 2026-09-08, ver
+          # docs/20). Quando o HEAD de main tem dois parents (é um commit
+          # de merge), o segundo parent é a ponta de develop realmente
+          # testada e incorporada; é contra ela que develop precisa
+          # continuar à frente ou igual.
+          shaMain="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          qtdPais="$(gh api "repos/$GH_REPO/commits/$shaMain" --jq '.parents | length')"
+          if [ "$qtdPais" -eq 2 ]; then
+            shaBaseDeMain="$(gh api "repos/$GH_REPO/commits/$shaMain" --jq '.parents[1].sha')"
+          else
+            shaBaseDeMain="$shaMain"
+          fi
+
+          status="$(gh api "repos/$GH_REPO/compare/$shaBaseDeMain...develop" --jq .status)"
           case "$status" in
             identical|ahead) ;;
             *)
-              echo "::error::develop não inclui a base de main (status da comparação: $status); publicação bloqueada."
+              echo "::error::develop não inclui a base relevante de main ($shaBaseDeMain, status da comparação: $status); publicação bloqueada."
               exit 1
               ;;
           esac
