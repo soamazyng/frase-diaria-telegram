@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -61,14 +63,14 @@ Bot pessoal de usuária única que envia uma frase por dia às 08:00 (America/Sa
 
 ## Stack aprovada
 
-Python, FastAPI, Mangum, AWS SAM, Lambda, EventBridge Scheduler, DynamoDB, S3 (cache de mídia), GitHub Actions. Substituições fora de escopo: JSON local, SQLite, PostgreSQL, APScheduler, TypeScript, Docker, servidor sempre ligado.
+Python, FastAPI, Mangum, AWS SAM, Lambda, EventBridge Scheduler, DynamoDB, GitHub Actions. Substituições fora de escopo: JSON local, SQLite, PostgreSQL, APScheduler, TypeScript, Docker, servidor sempre ligado.
 
 ## Arquitetura — responsabilidades dos módulos
 
 - **Domínio** — seleção, ciclos, elegibilidade, janela de envio, estados de entrega.
 - **Aplicação** — coordena sincronização, reserva, tentativa, confirmação e status.
 - **Notion** — busca blocos e converte em representação preservável.
-- **Telegram** — valida entrada e envia partes de texto ou mídia.
+- **Telegram** — valida entrada e envia partes de texto.
 - **Persistência** — snapshots, ciclos, pedidos, tentativas, controle de concorrência.
 - **Infraestrutura** — recursos, permissões, agendamento, entrada HTTP, retenção.
 - **Publicação** — PR, verificações, artefatos, promoção, recuperação.

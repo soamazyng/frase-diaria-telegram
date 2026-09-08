@@ -1,8 +1,62 @@
 # Regras de trabalho
 
-Armadilhas que **já morderam** neste projeto, com o incidente que originou cada
-regra. O `CLAUDE.md` descreve o que o projeto é; este arquivo descreve como
-trabalhar nele sem repetir erros já pagos.
+Regras de implementação e armadilhas que **já morderam** neste projeto. O
+`CLAUDE.md` descreve o projeto; este arquivo define como trabalhar nele.
+
+## Implementação: Clean Code e skills obrigatórias
+
+**Toda implementação, correção ou refatoração segue este fluxo**, mesmo quando
+o pedido não mencionar skills. Aplica-se também à continuação de tickets:
+
+1. Carregue `/implement` de `mattpocock/skills` antes de implementar. O nome
+   instalado é `implement`, não `implements`; siga suas instruções por inteiro.
+2. Carregue `/python-clean-code` antes de editar Python e aplique suas regras
+   durante a implementação e na revisão do diff final. Em mudanças somente de
+   infraestrutura ou documentação, consulte-a e registre quais regras Python
+   não se aplicam; aplique os princípios gerais pertinentes.
+3. Use `/tdd` nas fronteiras acordadas e execute os gates do repositório. Depois
+   das últimas correções, reaplique `/python-clean-code` e execute `/code-review`
+   nos eixos Standards e Spec. Uma alteração posterior invalida o OK do trecho
+   alterado e exige nova verificação.
+4. Registre no documento da entrega as skills aplicadas, regras atendidas ou
+   exceções justificadas, testes executados e resultado dos dois reviews.
+   Atualize `docs/code-review-tickets.md` quando houver ticket. Marque **OK**
+   somente após executar a verificação, sem achados impeditivos pendentes.
+
+Skills locais: `.agents/skills/implement/SKILL.md` e
+`.agents/skills/python-clean-code/SKILL.md`. Se ausentes, instale a origem
+correspondente antes de implementar; se houver bloqueio de acesso ou aprovação,
+informe-o e peça direção, sem alegar execução da skill.
+
+Origens: [implement](https://github.com/mattpocock/skills/tree/main/implement) e
+[python-clean-code](https://github.com/ertugrul-dmr/clean-code-skills/tree/main/skills/python/python-clean-code).
+A segunda é uma adaptação comunitária; não é uma skill de Matt Pocock nem uma
+certificação de Robert C. Martin.
+
+**Clean Code de Robert C. Martin (Uncle Bob), aplicado ao projeto:**
+
+- Nomes revelam intenção e efeitos; preserve o vocabulário do domínio em português.
+- Funções e módulos têm responsabilidade coesa e um motivo claro para mudar.
+  Separe regra de negócio, orquestração e I/O; dependências apontam para dentro.
+- Prefira interfaces pequenas, argumentos explícitos e dados tipados. Agrupe
+  parâmetros que formam um conceito; evite flags que escolhem comportamentos.
+- Elimine duplicação de conhecimento, código morto, comentários óbvios e
+  abstrações especulativas. Comentários explicam decisões e restrições.
+- Torne estados, pré-condições e efeitos colaterais explícitos; trate erros na
+  fronteira adequada, com diagnóstico sanitizado e sem esconder falhas.
+- Testes protegem comportamento, limites, repetição e falhas. Refatore em passos
+  pequenos, mantendo os testes verdes e preservando alterações de terceiros.
+
+Referências do autor: [responsabilidade única](https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html)
+e [direção das dependências](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html).
+
+**Adaptação explícita:** os comandos `uv`/Makefile e a configuração do projeto
+prevalecem sobre exemplos genéricos da skill. Limites de argumentos, número de
+acessos encadeados e duração de testes são sinais de revisão, não justificativa
+para quebrar contratos existentes, esconder comportamento em wrappers ou trocar
+testes de integração por mocks. Qualquer exceção precisa de justificativa local
+e avaliação no code-review; não autoriza ignorar a skill. Sua aplicação reforça
+a revisão, mas não substitui testes nem garante ausência de bugs.
 
 ---
 
@@ -158,7 +212,7 @@ reconciliador de publicações ficou de hora em hora por isso.
 
 **Antes de adicionar um serviço AWS, verifique se ele tem franquia permanente.**
 A conta já passou dos 12 meses, então só vale o *Always Free*. Lambda, DynamoDB e
-EventBridge Scheduler estão cobertos com folga; API Gateway e S3 custam centavos
+EventBridge Scheduler estão cobertos com folga; API Gateway custa centavos
 no volume do projeto. Registre qualquer novidade em `docs/01-custo-e-elegibilidade.md`.
 
 **Prefira SSM Parameter Store a Secrets Manager**: gratuito contra US$0,40 por

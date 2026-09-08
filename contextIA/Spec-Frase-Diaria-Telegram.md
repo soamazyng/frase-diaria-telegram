@@ -51,7 +51,7 @@ A usuária pode pedir outra frase com /frase e consultar a operação com /statu
 4. Como usuária, quero que o bot funcione com meu computador desligado, para dispensar execução manual.
 5. Como usuária, quero usar a coleção do Notion diretamente, para manter uma única fonte de conteúdo.
 6. Como usuária, quero ignorar itens vazios e a subpágina do projeto, para receber apenas frases.
-7. Como usuária, quero preservar autoria, origem, comentários, tags, links e imagens, para manter o contexto.
+7. Como usuária, quero preservar autoria, origem, comentários, tags e links, para manter o contexto.
 8. Como usuária, quero destaques adaptados ao Telegram, para conservar a intenção visual.
 9. Como usuária, quero manter as autorias cadastradas, para preservar minha coleção.
 10. Como usuária, quero receber somente conteúdo existente, para evitar frases ou comentários gerados por IA.
@@ -101,7 +101,7 @@ Responsabilidades dos módulos:
 - Domínio: seleção, ciclos, elegibilidade, janela de envio e estados de entrega.
 - Aplicação: coordenar sincronização, reserva, tentativa, confirmação e status.
 - Notion: buscar blocos e converter conteúdo em uma representação preservável.
-- Telegram: validar entrada e enviar partes de texto ou mídia.
+- Telegram: validar entrada e enviar partes de texto.
 - Persistência: snapshots, ciclos, pedidos, tentativas e controle de concorrência.
 - Infraestrutura: recursos, permissões, agendamento, entrada HTTP e retenção.
 - Publicação: PR, verificações, artefatos, promoção e recuperação.
@@ -124,15 +124,13 @@ Uma leitura completa sem frases substitui a coleção por um snapshot vazio: reg
 
 Sincronizar antes de cada pedido diário ou extra e novamente antes de uma nova tentativa que vá enviar conteúdo. Para uma tentativa sem nenhuma parte enviada, atualizar o conteúdo da frase reservada; se excluída, liberar e selecionar outra elegível. Após uma entrega parcial, manter a versão iniciada para concluir as partes restantes, registrando eventual alteração da fonte.
 
-### 4.3 Formatação, mídia e limites
+### 4.3 Formatação e limites
 
 Proposta técnica: renderização em HTML suportado pela Bot API, com escape de caracteres e preservação de negrito, itálico, código e links. Cores e fundos do Notion tornam-se destaque em negrito quando não houver equivalente. Remover apenas metadados operacionais da mensagem.
 
-Uma frase é uma entrega lógica e pode ocupar várias mensagens. Dividir texto sem perda, mantendo a ordem e marcação válida. Preservar imagens existentes; não gerar cards ou ilustrações. A implementação deve validar limites de texto, legenda e mídia pelos contratos atuais da [Telegram Bot API](https://core.telegram.org/bots/api).
+Uma frase é uma entrega lógica e pode ocupar várias mensagens. Dividir texto sem perda, mantendo a ordem e marcação válida. A implementação deve validar limites de texto pelos contratos atuais da [Telegram Bot API](https://core.telegram.org/bots/api).
 
-Proposta técnica: cache privado de imagens em S3, referenciado no DynamoDB, para permitir fallback completo. Reutilizar file_id do Telegram quando disponível. URLs temporárias do Notion, sozinhas, não formam um cache durável: elas expiram. [Objeto de bloco do Notion](https://developers.notion.com/reference/block)
-
-Salvar todas as partes e suas confirmações. Se a mídia não puder ser preservada, registrar falha ou entrega parcial; não classificar silenciosamente texto sem imagem como entrega completa. S3 é recurso auxiliar proposto e entra na verificação de custo.
+Salvar todas as partes e suas confirmações.
 
 ### 4.4 Seleção e ciclos
 
@@ -189,7 +187,7 @@ Validar o cabeçalho X-Telegram-Bot-Api-Secret-Token e conferir o tipo private e
 
 DynamoDB será a fonte persistente do estado operacional. Proposta de entidades lógicas, sem impor caminhos ou nomes físicos:
 
-- Frase: identidade, versão do conteúdo, estado ativo, representação rica e referências de mídia.
+- Frase: identidade, versão do conteúdo, estado ativo e representação rica.
 - Snapshot: identificador, instante, resultado de validação, quantidade e referência ao snapshot ativo.
 - Ciclo: identificador, versão concorrente, última frase entregue e estado de consumo por identidade.
 - Pedido: origem, chave idempotente, data-alvo, prazo, estado, reserva, conteúdo usado e próximo processamento.
@@ -208,13 +206,13 @@ Registrar atrasos acima de 15 minutos, falhas de integração, lock expirado, pe
 
 ### 4.9 Infraestrutura, segredos e orçamento
 
-SAM declara Lambda, Scheduler, DynamoDB e, na proposta técnica, HTTP API, buckets privados necessários, logs e permissões IAM. Selecionar runtime Python suportado no momento da implementação e fixar dependências testadas.
+SAM declara Lambda, Scheduler, DynamoDB e, na proposta técnica, HTTP API, logs e permissões IAM. Selecionar runtime Python suportado no momento da implementação e fixar dependências testadas.
 
 Separar recursos duráveis de dados dos recursos de aplicação para que atualizações e recuperação não apaguem histórico. Aplicar retenção e proteção contra exclusão dos recursos persistentes. Usar permissões específicas por função e criptografia dos serviços.
 
 Configurações mínimas: página do Notion, token da integração, token do Telegram, conversa autorizada, segredo do webhook, horário, fuso, janela de recuperação e identificadores dos recursos. Valores sensíveis são cadastrados fora do Git; parâmetros de infraestrutura não devem aparecer em logs. Escolher o armazenamento de segredos após verificar custo, acesso e rotação.
 
-Meta recorrente R$0, sem promessa de gratuidade. Antes do provisionamento, verificar elegibilidade da conta AWS, região, franquias e recursos auxiliares: API Gateway, logs, DynamoDB e índices, S3 e requisições, segredos/KMS, Scheduler, Lambda, tráfego e artefatos. Evitar VPC/NAT sem necessidade demonstrada. Registrar estimativa datada e como consultar consumo.
+Meta recorrente R$0, sem promessa de gratuidade. Antes do provisionamento, verificar elegibilidade da conta AWS, região, franquias e recursos auxiliares: API Gateway, logs, DynamoDB e índices, segredos/KMS, Scheduler, Lambda, tráfego e artefatos. Evitar VPC/NAT sem necessidade demonstrada. Registrar estimativa datada e como consultar consumo.
 
 No GitHub, verificar plano, minutos, armazenamento de artefatos e permissões. O desenho com varredura a cada cinco minutos também precisa entrar na estimativa. Nenhuma chamada paga de IA faz parte da operação do bot.
 
@@ -293,8 +291,7 @@ Complementar com testes de contrato nas fronteiras HTTP e de integração, e tes
 - AC08 — Leitura paginada incompleta conserva o snapshot anterior e não gera exclusões.
 - AC09 — Notion indisponível utiliza cache válido; sem cache registra falha; coleção legitimamente vazia não usa frases antigas.
 - AC10 — Parser preserva conteúdo e autoria literalmente, ignora item vazio/subpágina e mantém associação de filhos.
-- AC11 — Texto longo, acentos, caracteres especiais, links, destaques e imagens mantêm conteúdo e ordem na renderização.
-- AC12 — Imagem com URL expirada pode ser enviada a partir do cache durável; falta de mídia não vira sucesso completo.
+- AC11 — Texto longo, acentos, caracteres especiais, links e destaques mantêm conteúdo e ordem na renderização.
 - AC13 — Falha transitória agenda tentativa do mesmo pedido; falha permanente encerra sem repetição infinita.
 - AC14 — Às 12:00 nenhuma nova chamada da diária é iniciada; diária vencida não reaparece no dia seguinte.
 - AC15 — Reinício após reserva, após envio e durante confirmação não perde histórico; intenção sem confirmação resulta em estado incerto.
@@ -324,6 +321,7 @@ A suíte de CI usa fixtures e integrações simuladas para resultados reproduzí
 - IA para gerar, comentar, corrigir autoria ou recomendar frases durante a operação.
 - Filtros por tema, favoritas, avaliações, resumos semanais ou horários por dia.
 - Cards gerados e edição artística das imagens.
+- Preservação, cache ou envio de imagens da coleção do Notion; frases usam apenas texto.
 - Fonte local JSON, SQLite ou PostgreSQL como armazenamento de produção.
 - Ambiente AWS permanente para dev.
 - Merge automático ou publicação apenas após merge.
@@ -337,7 +335,7 @@ A suíte de CI usa fixtures e integrações simuladas para resultados reproduzí
 
 **Etapa 1 — Base e testes.** Criar domínio e casos de uso; implementar seleção, ciclos e identidades de pedido; usar dependências simuladas. Concluir com AC04–AC07 e testes de janela e duplicidade reproduzíveis. Não provisionar AWS.
 
-**Etapa 2 — Integrações.** Implementar leitura Notion, renderização Telegram, comandos, modelo persistente e cache de mídia. Concluir com contratos verificáveis, preservação do conteúdo, autenticação e sincronização parcial cobertas. Usar fixtures locais antes do aceite real.
+**Etapa 2 — Integrações.** Implementar leitura Notion, renderização Telegram, comandos e modelo persistente. Concluir com contratos verificáveis, preservação do conteúdo, autenticação e sincronização parcial cobertas. Usar fixtures locais antes do aceite real.
 
 **Etapa 3 — Infraestrutura.** Declarar recursos em SAM, agendamento, worker/reconciliador, segredos, retenção e tentativas. Concluir com uma entrega real, persistência após reinício, diagnóstico de falhas e estimativa de consumo.
 
@@ -353,7 +351,7 @@ Dividir o trabalho em sessões pequenas compatíveis com menos de duas horas sem
 - Telegram: criar bot, iniciar conversa privada e cadastrar token, chat_id e segredo fora do repositório.
 - Fronteira de testes: proposta registrada na seção 5 para revisão.
 - Políticas complementares: validar a janela de retentativa de extras e o tratamento conservador de entrega incerta antes da etapa 3.
-- Recursos auxiliares: validar HTTP API, cache S3 e armazenamento de segredos na estimativa de infraestrutura; são escolhas propostas, não serviços previamente aprovados no refino.
+- Recursos auxiliares: validar HTTP API e armazenamento de segredos na estimativa de infraestrutura; são escolhas propostas, não serviços previamente aprovados no refino.
 - Issue tracker: não foi informado um rastreador nem seu vocabulário. A skill To Spec orienta executar /setup-matt-pocock-skills para configurá-los. Até isso ocorrer, esta spec fica na página do projeto no Notion e em Markdown; ready-for-agent é apenas triagem sugerida.
 
 ### Definição de pronto

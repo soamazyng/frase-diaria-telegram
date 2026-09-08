@@ -2,7 +2,7 @@
 
 **What to build:** o fechamento do MVP. A usuária consegue configurar credenciais, diagnosticar uma falha e executar uma recuperação seguindo a documentação, e o sistema inteiro é exercitado uma vez de ponta a ponta contra a AWS real — inclusive uma entrega de verdade e uma recuperação controlada.
 
-**Blocked by:** 13 — Imagens com cache durável; 15 — /status completo; 21 — Proteção de main e merge manual.
+**Blocked by:** 15 — /status completo; 21 — Proteção de main e merge manual.
 
 **Status:** ready-for-agent
 
