@@ -203,11 +203,47 @@ foi fechada com o relato do que aconteceu.
   estava certo (só não deveria ter sido alcançado neste caso).
 - "Registrar diagnóstico no GitHub" cria a issue com o texto certo.
 
-**O que ainda não ficou provado:** o próprio passo `Recuperar publicação
-saudável anterior` — baixar o artefato de uma execução passada, conferir o
-checksum, rodar `sam deploy` com o SHA antigo — nunca chegou a executar.
-É o único trecho genuinamente novo e não testado do ticket 19; o próximo
-teste de fogo (com o bug já corrigido) deve mirar exatamente nele.
+**O que ainda não tinha ficado provado nesta primeira rodada:** o próprio
+passo `Recuperar publicação saudável anterior` — baixar o artefato de uma
+execução passada, conferir o checksum, rodar `sam deploy` com o SHA antigo
+— nunca chegou a executar. Era o único trecho genuinamente novo e não
+testado do ticket 19.
+
+## Segunda rodada — recuperação completa provada de ponta a ponta
+
+Com os dois `always()` corrigidos, o mesmo teste foi repetido
+(`VERSAO=quebrado-de-proposito-ticket-19-round2`, mesma técnica: só o
+rótulo, artefato/código real inalterado). Desta vez a cadeia completa
+rodou de verdade:
+
+```
+✓ sam deploy (artefato já construído)          # publica com o rótulo errado
+X Verificar saúde...                            # diagnóstico reprova, como esperado
+✓ Localizar última publicação saudável          # acha 05655cd (o SHA correto)
+✓ Recuperar publicação saudável anterior        # baixa o artefato de 05655cd, checksum ok, sam deploy ok
+✓ Verificar publicação recuperada               # diagnóstico pós-recuperação aprova
+✓ Registrar resultado da recuperação            # implantação marcada success
+- Desabilitar agendamento diário                # skipped — corretamente, a recuperação funcionou
+- Registrar diagnóstico no GitHub               # skipped — pelo mesmo motivo
+X Registrar resultado da publicação             # o commit de teste continua failure, por desenho
+```
+
+Confirmado contra o sistema real, não só pelo log do job:
+- `aws cloudformation ... Outputs.VersaoPublicada` = `05655cd...` (o SHA
+  recuperado, não o rótulo quebrado) logo após o passo "Recuperar".
+- `GET /health` respondendo `{"situacao":"ok","versao":"05655cd..."}`.
+- A implantação de recuperação (`gh api .../deployments`) com descrição
+  "recuperação automática após falha em a4250f6..." e status final
+  `success`, `description: "diagnóstico pós-recuperação: success"`.
+- `aws scheduler get-schedule ... State` permaneceu `ENABLED` durante todo
+  o teste — a recuperação bem-sucedida nunca chegou a acionar o
+  desligamento.
+
+Isso fecha a lacuna da primeira rodada: agora os quatro comportamentos
+centrais do ticket 19 (detectar falha, achar a versão saudável, recuperar
+sem reconstruir, verificar o resultado) estão provados contra AWS/GitHub
+reais, não só implementados. Reversão do `Versao` de teste e do commit
+aplicados em seguida; pipeline confirmado voltando ao normal.
 
 ## Review
 
