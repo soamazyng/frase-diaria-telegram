@@ -1,0 +1,65 @@
+name: PR develop -> main
+
+# Só push em develop, nunca pull_request/pull_request_target: o fluxo não
+# pode depender de um evento de PR produzido pelo token padrão do Actions,
+# que tem regras próprias de disparo e aprovação (ticket 17; spec, 4.11).
+on:
+  push:
+    branches:
+      - develop
+
+# Negado por padrão: nenhum passo lê conteúdo do repositório (sem checkout).
+# A única elevação necessária é pull-requests: write, só no job que
+# cria/consulta o PR.
+permissions: {}
+
+concurrency:
+  # Sem cancel-in-progress: dois pushes próximos enfileiram em vez de correr
+  # ao mesmo tempo, evitando que dois `gh pr create` disputem a mesma criação.
+  group: pr-develop-main
+
+jobs:
+  garantir-pr:
+    name: Garantir PR develop -> main
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      # Sem actions/checkout: gh compara os refs remotamente, e nenhum passo
+      # aqui precisa do conteúdo do repositório — menos superfície, nenhuma
+      # credencial de git persistida à toa.
+      - name: Garantir que existe um PR aberto develop -> main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          abertos="$(gh pr list --base main --head develop --state open --json number --jq 'length')"
+          if [ "$abertos" -gt 0 ]; then
+            echo "Já existe um PR aberto entre develop e main; o push atual entra nele."
+            exit 0
+          fi
+
+          if saida="$(gh pr create \
+            --base main \
+            --head develop \
+            --title 'develop -> main' \
+            --body 'PR automático (ticket 17). Publicação e verificação acontecem a partir de develop, antes deste merge; o merge continua manual (spec, 4.11).' \
+            2>&1)"; then
+            echo "$saida"
+            exit 0
+          fi
+
+          # "No commits between" e "already exists" são os dois desfechos
+          # esperados sem PR novo: nenhuma diferença para main, ou uma
+          # corrida com outra execução deste mesmo workflow. Qualquer outra
+          # falha propaga de verdade.
+          if echo "$saida" | grep -qiE "no commits between|already exists"; then
+            echo "$saida"
+            echo "Nada a fazer: sem diferenças para main, ou PR já criado por outra execução."
+            exit 0
+          fi
+
+          echo "$saida" >&2
+          exit 1
