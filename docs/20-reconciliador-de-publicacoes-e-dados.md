@@ -178,6 +178,15 @@ para frente.** A comparação agora resolve corretamente sem precisar que
 naturalmente `parents[1]` (é o próprio histórico de `develop`).
 `actionlint`/`shellcheck` sem achados nos dois arquivos após o fix.
 
+**Validado contra o cenário real que causou o incidente original.** Após
+o fix publicado (`cc92ecb`), a PR #5 (`develop -> main`, contendo essa
+mesma correção) foi mergeada (`0407c8a`) e o reconciliador disparado
+manualmente de novo, sem PR aberto — a repetição exata do cenário que
+causou o falso positivo. Desta vez: `"Versão ativa (cc92ecb...) já é a
+estável; nada a fazer (idempotente)."` — nenhum passo de reconciliação,
+nenhuma issue aberta, agendamento diário permaneceu `ENABLED`. Fix
+confirmado.
+
 ## Próximo passo
 
 1. **Ticket 21** — proteção de `main` e merge manual — segue não bloqueado
