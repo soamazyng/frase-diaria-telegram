@@ -38,3 +38,16 @@ def test_o_payload_carrega_apenas_a_identidade_do_pedido() -> None:
     DespachanteLambda(nome_da_funcao="w", cliente=cliente).acordar("extra#42")
 
     assert json.loads(cliente.chamadas[0]["Payload"]) == {"pedido": "extra#42"}
+
+
+def test_pedir_status_invoca_a_mesma_funcao_worker() -> None:
+    # Mesma Lambda do envio de frase: já tem toda a permissão necessária, e uma
+    # terceira função só para isto seria superfície de ataque sem benefício.
+    cliente = ClienteEspiao()
+
+    DespachanteLambda(nome_da_funcao="frase-diaria-worker", cliente=cliente).pedir_status(672024065)
+
+    chamada = cliente.chamadas[0]
+    assert chamada["FunctionName"] == "frase-diaria-worker"
+    assert chamada["InvocationType"] == "Event"
+    assert json.loads(chamada["Payload"]) == {"status_chat_id": 672024065}

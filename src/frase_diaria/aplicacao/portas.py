@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from frase_diaria.dominio.colecao import ColecaoValida, SnapshotPersistido
+from frase_diaria.dominio.colecao import ColecaoValida, SnapshotPersistido, TentativaDeSincronizacao
 from frase_diaria.dominio.pedido import Pedido
 
 
@@ -50,3 +50,13 @@ class RepositorioDeColecao(Protocol):
     def substituir(self, colecao: ColecaoValida, instante: datetime) -> None:
         """Publica um novo snapshot ativo, inclusive um legitimamente vazio."""
         ...
+
+    def registrar_tentativa(self, tentativa: TentativaDeSincronizacao) -> None:
+        """Registra o resultado da tentativa mais recente, sucesso ou falha.
+
+        `/status` lê isto para relatar "última tentativa" e "falha ativa" sem
+        precisar disparar uma sincronização nova (spec, 4.7).
+        """
+        ...
+
+    def ultima_tentativa(self) -> TentativaDeSincronizacao | None: ...

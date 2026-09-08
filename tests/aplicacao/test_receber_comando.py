@@ -183,12 +183,18 @@ class PedidosEspiao:
 class DespachanteEspiao:
     def __init__(self, falhar: bool = False) -> None:
         self.acordados: list[str] = []
+        self.pedidos_de_status: list[int] = []
         self.falhar = falhar
 
     def acordar(self, identidade: str) -> None:
         if self.falhar:
             raise RuntimeError("Lambda indisponível")
         self.acordados.append(identidade)
+
+    def pedir_status(self, chat_id: int) -> None:
+        if self.falhar:
+            raise RuntimeError("Lambda indisponível")
+        self.pedidos_de_status.append(chat_id)
 
 
 def _caso_com_pedidos(pedidos: Any, despachante: Any, canal: Any = None) -> ReceberComando:
@@ -344,11 +350,62 @@ def test_update_irrelevante_sem_segredo_nao_e_reconhecido() -> None:
     assert repositorio.registrados == []
 
 
-def test_status_recebe_a_ajuda_enquanto_o_ticket_15_nao_chega() -> None:
-    # Um comando documentado que não responde nada faz o bot parecer quebrado.
+def test_status_nao_responde_no_webhook() -> None:
+    # Montar a resposta exige ler o DynamoDB e sincronizar com o Notion — isso
+    # é trabalho do worker, não da fronteira HTTP (ticket 15).
     canal = CanalEspiao()
 
     _caso(canal=canal).executar(segredo=SEGREDO, corpo=_mensagem("/status"))
 
-    assert len(canal.enviados) == 1
-    assert "em construção" in canal.enviados[0][1]
+    assert canal.enviados == []
+
+
+def test_status_pede_ao_worker_o_relatorio_da_conversa() -> None:
+    despachante = DespachanteEspiao()
+
+    desfecho = ReceberComando(
+        politica=POLITICA,
+        repositorio=RepositorioEmMemoria(),
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=despachante,
+    ).executar(segredo=SEGREDO, corpo=_mensagem("/status"))
+
+    assert desfecho is Desfecho.ACEITO
+    assert despachante.pedidos_de_status == [CHAT]
+
+
+def test_status_repetido_nao_pede_o_relatorio_de_novo() -> None:
+    # Idempotência: reentrega do mesmo update_id não deve duplicar o despacho.
+    repositorio = RepositorioEmMemoria()
+    despachante = DespachanteEspiao()
+    caso = ReceberComando(
+        politica=POLITICA,
+        repositorio=repositorio,
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=despachante,
+    )
+
+    caso.executar(segredo=SEGREDO, corpo=_mensagem("/status", update_id=9))
+    desfecho = caso.executar(segredo=SEGREDO, corpo=_mensagem("/status", update_id=9))
+
+    assert desfecho is Desfecho.JA_CONHECIDO
+    assert despachante.pedidos_de_status == [CHAT]
+
+
+def test_falha_ao_pedir_status_nao_derruba_o_webhook() -> None:
+    # Melhor esforço, como o despacho do /frase: o comando já está registrado,
+    # e devolver erro faria o Telegram reentregar algo já reconhecido.
+    desfecho = ReceberComando(
+        politica=POLITICA,
+        repositorio=RepositorioEmMemoria(),
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=DespachanteEspiao(falhar=True),
+    ).executar(segredo=SEGREDO, corpo=_mensagem("/status"))
+
+    assert desfecho is Desfecho.ACEITO

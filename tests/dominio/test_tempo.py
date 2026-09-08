@@ -1,8 +1,14 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from frase_diaria.dominio.tempo import FUSO_LOCAL, dia_local, politica_do_extra, prazo_da_diaria
+from frase_diaria.dominio.tempo import (
+    FUSO_LOCAL,
+    dia_local,
+    politica_do_extra,
+    prazo_da_diaria,
+    proxima_ocorrencia_diaria,
+)
 
 
 def test_fuso_local_e_sao_paulo() -> None:
@@ -63,3 +69,32 @@ def test_extra_criado_exatamente_ao_meio_dia_tem_tentativa_unica() -> None:
 
     assert politica.prazo is None
     assert politica.tentativa_unica is True
+
+
+def test_proxima_ocorrencia_e_hoje_as_08_00_quando_a_diaria_de_hoje_nao_terminou() -> None:
+    agora = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)  # 10:00 em São Paulo
+
+    proxima = proxima_ocorrencia_diaria(agora, diaria_de_hoje_terminal=False)
+
+    # 08:00 em São Paulo é 11:00 UTC — já passou, mas a diária de hoje ainda
+    # não terminou, então a ocorrência "corrente" continua sendo a de hoje.
+    assert proxima == datetime(2026, 9, 7, 11, 0, tzinfo=UTC)
+
+
+def test_proxima_ocorrencia_e_amanha_quando_a_diaria_de_hoje_ja_terminou() -> None:
+    agora = datetime(2026, 9, 7, 13, 0, tzinfo=UTC)  # 10:00 em São Paulo
+
+    proxima = proxima_ocorrencia_diaria(agora, diaria_de_hoje_terminal=True)
+
+    assert proxima == datetime(2026, 9, 8, 11, 0, tzinfo=UTC)
+
+
+def test_proxima_ocorrencia_usa_o_dia_local_no_calculo_de_amanha() -> None:
+    # 23:00 em São Paulo de 06/09 é 02:00 UTC de 07/09; o dia local é 06/09,
+    # então "amanhã" é 07/09 local — não 08/09, que seria o erro de usar UTC.
+    agora = datetime(2026, 9, 7, 2, 0, tzinfo=UTC)
+
+    proxima = proxima_ocorrencia_diaria(agora, diaria_de_hoje_terminal=True)
+
+    assert proxima == datetime(2026, 9, 7, 11, 0, tzinfo=UTC)
+    assert timedelta(hours=0) <= proxima - agora <= timedelta(hours=24)

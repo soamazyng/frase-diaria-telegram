@@ -49,6 +49,20 @@ def test_identidade_diaria_combina_conversa_e_dia_local() -> None:
     )
 
 
+def test_dia_alvo_da_diaria_vem_da_identidade() -> None:
+    diaria = Pedido(
+        identidade=Pedido.identidade_de_diaria(chat_id=123456789, dia=date(2026, 9, 7)),
+        origem=Origem.DIARIA,
+        chat_id=123456789,
+    )
+
+    assert diaria.dia_alvo_da_diaria() == date(2026, 9, 7)
+
+
+def test_dia_alvo_da_diaria_e_none_para_um_extra() -> None:
+    assert _pedido().dia_alvo_da_diaria() is None
+
+
 def test_identidades_de_parte_e_tentativa_pertencem_ao_pedido() -> None:
     assert Pedido.identidade_de_parte("extra#bot-ficticio#42", indice=3) == (
         "extra#bot-ficticio#42#parte#3"

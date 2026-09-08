@@ -4,12 +4,12 @@
 
 **Blocked by:** 11 — Snapshot durável, cache e fallback do Notion; 14 — Envio diário, retentativas e janela até 12:00.
 
-**Status:** ready-for-agent
+**Status:** concluído em 2026-09-08 — ver `docs/15-status-completo.md`
 
-- [ ] `/status` passa pela mesma autenticação do webhook.
-- [ ] A resposta traz último envio confirmado, próxima ocorrência diária, situação da diária atual, última sincronização válida, última tentativa de sincronização, uso de cache e falhas ativas ou última falha.
-- [ ] A resposta distingue nunca enviado, cache desatualizado, falha, parcial e incerto (AC17).
-- [ ] Todos os horários são apresentados no fuso local da usuária (AC17).
-- [ ] Partes marcadas como incertas aparecem explicitamente, deixando claro que não serão reenviadas automaticamente.
-- [ ] `/status` não consome frase nem altera o ciclo.
-- [ ] A resposta não expõe tokens, URLs assinadas nem parâmetros de infraestrutura.
+- [x] `/status` passa pela mesma autenticação do webhook.
+- [x] A resposta traz último envio confirmado, próxima ocorrência diária, situação da diária atual, última sincronização válida, última tentativa de sincronização, uso de cache e falhas ativas ou última falha.
+- [x] A resposta distingue nunca enviado, cache desatualizado, falha, parcial e incerto (AC17).
+- [x] Todos os horários são apresentados no fuso local da usuária (AC17).
+- [x] Partes marcadas como incertas aparecem explicitamente, deixando claro que não serão reenviadas automaticamente.
+- [x] `/status` não consome frase nem altera o ciclo.
+- [x] A resposta não expõe tokens, URLs assinadas nem parâmetros de infraestrutura.

@@ -11,7 +11,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from frase_diaria.dominio.colecao import ColecaoValida, Diagnostico, FrasePreservada
+from frase_diaria.dominio.colecao import (
+    ColecaoValida,
+    Diagnostico,
+    FrasePreservada,
+    TentativaDeSincronizacao,
+)
 from frase_diaria.dominio.conteudo import Bloco, Trecho
 from frase_diaria.persistencia.colecao import RepositorioDeColecaoDynamo
 
@@ -155,3 +160,41 @@ def test_substituir_troca_completamente_a_lista_de_frases(repositorio: Any) -> N
     assert persistido is not None
     assert [f.identidade for f in persistido.colecao.itens] == ["b2"]
     assert persistido.instante == depois
+
+
+# --- última tentativa de sincronização (ticket 15) ------------------------------
+
+
+def test_sem_tentativa_gravada_devolve_none(repositorio: Any) -> None:
+    assert repositorio.ultima_tentativa() is None
+
+
+def test_tentativa_bem_sucedida_sobrevive_a_um_reinicio(repositorio: Any) -> None:
+    repositorio.registrar_tentativa(TentativaDeSincronizacao(instante=INSTANTE, erro=None))
+
+    tentativa = repositorio.ultima_tentativa()
+
+    assert tentativa == TentativaDeSincronizacao(instante=INSTANTE, erro=None)
+
+
+def test_tentativa_com_erro_preserva_a_mensagem(repositorio: Any) -> None:
+    repositorio.registrar_tentativa(
+        TentativaDeSincronizacao(instante=INSTANTE, erro="Notion respondeu HTTP 504")
+    )
+
+    tentativa = repositorio.ultima_tentativa()
+
+    assert tentativa is not None
+    assert tentativa.erro == "Notion respondeu HTTP 504"
+
+
+def test_nova_tentativa_substitui_a_anterior(repositorio: Any) -> None:
+    repositorio.registrar_tentativa(
+        TentativaDeSincronizacao(instante=INSTANTE, erro="falha antiga")
+    )
+
+    depois = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    repositorio.registrar_tentativa(TentativaDeSincronizacao(instante=depois, erro=None))
+
+    tentativa = repositorio.ultima_tentativa()
+    assert tentativa == TentativaDeSincronizacao(instante=depois, erro=None)

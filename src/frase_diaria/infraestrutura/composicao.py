@@ -10,7 +10,9 @@ from typing import Any
 
 import boto3
 
+from frase_diaria.aplicacao.consultar_status import ConsultarStatus, EnviarStatus
 from frase_diaria.aplicacao.criar_diaria import CriarDiaria
+from frase_diaria.aplicacao.portas import Relogio
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
 from frase_diaria.aplicacao.reconciliar_pendencias import ReconciliarPendencias
@@ -111,6 +113,15 @@ def montar_reconciliar_pendencias() -> ReconciliarPendencias:
     )
 
 
+def _montar_sincronizar_colecao(guardados: dict[str, str], relogio: Relogio) -> SincronizarColecao:
+    return SincronizarColecao(
+        leitor=LeitorDeColecao(ClienteNotionHttp(token=guardados["notion-token"])),
+        repositorio=RepositorioDeColecaoDynamo(tabela=_tabela()),
+        pagina_id=guardados["notion-pagina-id"],
+        relogio=relogio,
+    )
+
+
 def montar_processar_pedido() -> ProcessarPedido:
     """O worker.
 
@@ -123,12 +134,7 @@ def montar_processar_pedido() -> ProcessarPedido:
     guardados = segredos()
     bot_legado = _bot_legado(guardados)
     relogio = RelogioDoSistema()
-    sincronizar = SincronizarColecao(
-        leitor=LeitorDeColecao(ClienteNotionHttp(token=guardados["notion-token"])),
-        repositorio=RepositorioDeColecaoDynamo(tabela=_tabela()),
-        pagina_id=guardados["notion-pagina-id"],
-        relogio=relogio,
-    )
+    sincronizar = _montar_sincronizar_colecao(guardados, relogio)
     return ProcessarPedido(
         repositorio=RepositorioDePedidosDynamo(
             tabela=_tabela(),
@@ -141,6 +147,27 @@ def montar_processar_pedido() -> ProcessarPedido:
         relogio=relogio,
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
         reserva=ReservaTransacional(tabela=_tabela(), bot_legado=bot_legado),
+    )
+
+
+def montar_enviar_status(chat_id: int) -> EnviarStatus:
+    """Monta, formata e envia o relatório de `/status` para `chat_id`.
+
+    Só lê o DynamoDB — nunca sincroniza com o Notion. Os dados de
+    sincronização vêm da última tentativa real (diária, extra ou
+    reconciliador), gravada por `SincronizarColecao`; disparar uma nova só
+    para responder à consulta apagaria a última falha assim que desse certo.
+    """
+    guardados = segredos()
+    bot_legado = _bot_legado(guardados)
+    consultar = ConsultarStatus(
+        repositorio=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
+        colecao=RepositorioDeColecaoDynamo(tabela=_tabela()),
+        relogio=RelogioDoSistema(),
+        chat_id=chat_id,
+    )
+    return EnviarStatus(
+        consultar=consultar, canal=TelegramHttp(token=guardados["telegram-bot-token"])
     )
 
 

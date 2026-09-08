@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 FUSO_LOCAL = ZoneInfo("America/Sao_Paulo")
@@ -32,6 +32,25 @@ def dia_local(instante: datetime) -> date:
 
 def _meio_dia_local_em_utc(dia: date) -> datetime:
     return em_utc(datetime.combine(dia, LIMITE_DE_RECUPERACAO_LOCAL, tzinfo=FUSO_LOCAL))
+
+
+def _envio_alvo_local_em_utc(dia: date) -> datetime:
+    return em_utc(datetime.combine(dia, INICIO_DO_ENVIO_ALVO_LOCAL, tzinfo=FUSO_LOCAL))
+
+
+def proxima_ocorrencia_diaria(agora: datetime, diaria_de_hoje_terminal: bool) -> datetime:
+    """O próximo 08:00 local que /status deve anunciar como "próxima ocorrência".
+
+    Enquanto a diária de hoje não chegou a um estado terminal — ainda não foi
+    criada, está pendente, ou está em retentativa —, ela continua sendo "a"
+    ocorrência corrente, mesmo que 08:00 já tenha passado: é para ela que o
+    reconciliador ainda está trabalhando. Só depois de terminada (com sucesso
+    ou definitivamente) é que a próxima ocorrência passa a ser amanhã.
+    """
+    dia = dia_local(agora)
+    if not diaria_de_hoje_terminal:
+        return _envio_alvo_local_em_utc(dia)
+    return _envio_alvo_local_em_utc(dia + timedelta(days=1))
 
 
 def prazo_da_diaria(dia_alvo: date) -> datetime:

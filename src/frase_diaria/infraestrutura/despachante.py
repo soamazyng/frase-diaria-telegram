@@ -16,8 +16,19 @@ class DespachanteLambda:
     cliente: Any
 
     def acordar(self, identidade: str) -> None:
+        self._invocar({"pedido": identidade})
+
+    def pedir_status(self, chat_id: int) -> None:
+        """Pede ao worker que monte e envie o relatório de `/status`.
+
+        Mesma função, payload de formato distinto: `worker_handler` decide
+        qual caminho seguir pela chave presente no evento.
+        """
+        self._invocar({"status_chat_id": chat_id})
+
+    def _invocar(self, payload: dict[str, Any]) -> None:
         self.cliente.invoke(
             FunctionName=self.nome_da_funcao,
             InvocationType="Event",
-            Payload=json.dumps({"pedido": identidade}).encode("utf-8"),
+            Payload=json.dumps(payload).encode("utf-8"),
         )

@@ -9,6 +9,7 @@ from frase_diaria.dominio.colecao import (
     Diagnostico,
     FrasePreservada,
     SnapshotPersistido,
+    TentativaDeSincronizacao,
 )
 from frase_diaria.dominio.conteudo import Bloco, Trecho
 from frase_diaria.dominio.tempo import em_utc
@@ -30,6 +31,9 @@ class RepositorioDeColecaoDynamo:
     tabela: Any
 
     CHAVE: ClassVar[dict[str, str]] = {"pk": "colecao", "sk": "atual"}
+    # Item separado do snapshot: uma tentativa que falhou não produz coleção
+    # nova, mas precisa ficar visível para `/status` sem sincronizar de novo.
+    CHAVE_DA_TENTATIVA: ClassVar[dict[str, str]] = {"pk": "colecao", "sk": "ultima-tentativa"}
 
     def carregar_ativa(self) -> SnapshotPersistido | None:
         item = self.tabela.get_item(Key=self.CHAVE, ConsistentRead=True).get("Item")
@@ -74,6 +78,24 @@ class RepositorioDeColecaoDynamo:
             )
         except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
             _log.info("snapshot mais recente já persistido; esta gravação foi descartada")
+
+    def registrar_tentativa(self, tentativa: TentativaDeSincronizacao) -> None:
+        item: dict[str, Any] = {
+            **self.CHAVE_DA_TENTATIVA,
+            "instante": em_utc(tentativa.instante).isoformat(timespec="microseconds"),
+        }
+        if tentativa.erro is not None:
+            item["erro"] = tentativa.erro
+        self.tabela.put_item(Item=item)
+
+    def ultima_tentativa(self) -> TentativaDeSincronizacao | None:
+        item = self.tabela.get_item(Key=self.CHAVE_DA_TENTATIVA, ConsistentRead=True).get("Item")
+        if item is None:
+            return None
+        return TentativaDeSincronizacao(
+            instante=em_utc(datetime.fromisoformat(item["instante"])),
+            erro=item.get("erro"),
+        )
 
 
 def _item_de_diagnostico(diagnostico: Diagnostico) -> dict[str, Any]:

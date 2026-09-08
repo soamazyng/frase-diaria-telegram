@@ -71,6 +71,12 @@ _TRANSICOES_PERMITIDAS: dict[EstadoDoPedido, frozenset[EstadoDoPedido]] = {
 }
 
 
+# Motivo de um pedido recém-criado, antes de qualquer transição. Constante
+# compartilhada (não só o default do campo abaixo) porque `telegram/status.py`
+# precisa reconhecer esse motivo para não exibi-lo como se fosse informativo.
+MOTIVO_PADRAO = "pedido criado"
+
+
 @dataclass(frozen=True)
 class Pedido:
     """Uma solicitação de envio, com identidade que sobrevive a reinícios."""
@@ -80,7 +86,7 @@ class Pedido:
     chat_id: int
     estado: EstadoDoPedido = EstadoDoPedido.PENDENTE
     frase_reservada: str | None = None
-    motivo_do_estado: str = "pedido criado"
+    motivo_do_estado: str = MOTIVO_PADRAO
     proxima_tentativa: datetime | None = None
     # Instante-limite (UTC) após o qual o pedido é abandonado em vez de retentado.
     # None significa "sem prazo conhecido" — só ocorre em pedidos persistidos
@@ -116,6 +122,17 @@ class Pedido:
     def identidade_de_diaria(chat_id: int, dia: date) -> str:
         """Identidade de uma diária: conversa autorizada mais data local."""
         return f"diaria#{chat_id}#{dia.isoformat()}"
+
+    def dia_alvo_da_diaria(self) -> date | None:
+        """O dia local que esta diária alvejava, ou `None` para um extra.
+
+        Lido de volta da própria identidade — nenhum campo novo precisa ser
+        persistido só para isto (`/status` usa este dia para relatar "quando"
+        foi o último envio confirmado).
+        """
+        if self.origem is not Origem.DIARIA:
+            return None
+        return date.fromisoformat(self.identidade.rsplit("#", 1)[-1])
 
     @staticmethod
     def identidade_de_parte(pedido: str, indice: int) -> str:

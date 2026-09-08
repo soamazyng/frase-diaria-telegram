@@ -16,7 +16,7 @@ _log = logging.getLogger(__name__)
 AJUDA = (
     "Eu envio uma frase por dia às 08:00.\n\n"
     "/frase — uma frase extra agora\n"
-    "/status — como está a operação (em construção)"
+    "/status — como está a operação"
 )
 
 
@@ -41,7 +41,11 @@ class CanalDeTelegram(Protocol):
 
 class Despachante(Protocol):
     def acordar(self, identidade: str) -> None:
-        """Tenta pôr o worker para trabalhar agora."""
+        """Tenta pôr o worker para trabalhar um pedido agora."""
+        ...
+
+    def pedir_status(self, chat_id: int) -> None:
+        """Tenta pôr o worker para montar e enviar o relatório de `/status`."""
         ...
 
 
@@ -108,6 +112,10 @@ class ReceberComando:
         if not novo:
             return Desfecho.JA_CONHECIDO
 
+        if atualizacao.comando is Comando.STATUS:
+            self._pedir_status(atualizacao.conversa.chat_id)
+            return Desfecho.ACEITO
+
         self._responder_ajuda(atualizacao.conversa.chat_id)
         return Desfecho.ACEITO
 
@@ -123,6 +131,18 @@ class ReceberComando:
             self.canal.enviar_texto(chat_id, AJUDA)
         except Exception:
             _log.exception("falha ao enviar a ajuda; a usuária pode repetir o comando")
+
+    def _pedir_status(self, chat_id: int) -> None:
+        """Pede ao worker que monte e envie o relatório de `/status`.
+
+        Igual à ajuda: melhor esforço. O comando já está registrado, então
+        devolver erro aqui só faria o Telegram reentregar algo já reconhecido
+        — e a reentrega cairia direto em `JA_CONHECIDO`, sem despachar de novo.
+        """
+        try:
+            self.despachante.pedir_status(chat_id)
+        except Exception:
+            _log.exception("falha ao pedir o status ao worker; sem reconciliador para isto")
 
     def _pedir_frase(self, update_id: int, chat_id: int) -> None:
         """Cria o pedido extra e tenta acordar o worker.
@@ -148,4 +168,4 @@ class ReceberComando:
         except Exception:
             # O pedido está persistido; o reconciliador o alcançará. Falhar aqui
             # faria o Telegram reentregar um comando já registrado.
-            _log.error("falha ao acordar o worker; pedido permanece persistido")
+            _log.exception("falha ao acordar o worker; pedido permanece persistido")

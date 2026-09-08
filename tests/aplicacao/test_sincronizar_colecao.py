@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 import pytest
 
 from frase_diaria.aplicacao.sincronizar_colecao import SincronizarColecao
-from frase_diaria.dominio.colecao import ColecaoValida, FrasePreservada, SnapshotPersistido
+from frase_diaria.dominio.colecao import (
+    ColecaoValida,
+    FrasePreservada,
+    SnapshotPersistido,
+    TentativaDeSincronizacao,
+)
 from frase_diaria.dominio.colecao import SincronizacaoIncompleta as ErroDeSincronizacao
 from frase_diaria.dominio.conteudo import Bloco, Trecho
 
@@ -48,6 +53,7 @@ class RepositorioFalso:
     def __init__(self, snapshot: SnapshotPersistido | None = None) -> None:
         self.snapshot = snapshot
         self.substituicoes: list[ColecaoValida] = []
+        self.tentativas: list[TentativaDeSincronizacao] = []
 
     def carregar_ativa(self) -> SnapshotPersistido | None:
         return self.snapshot
@@ -57,6 +63,12 @@ class RepositorioFalso:
         self.snapshot = SnapshotPersistido(
             identificador="ignorado", colecao=colecao, instante=instante
         )
+
+    def registrar_tentativa(self, tentativa: TentativaDeSincronizacao) -> None:
+        self.tentativas.append(tentativa)
+
+    def ultima_tentativa(self) -> TentativaDeSincronizacao | None:
+        return self.tentativas[-1] if self.tentativas else None
 
 
 def test_sincronizacao_bem_sucedida_persiste_e_nao_usa_cache() -> None:
@@ -131,3 +143,56 @@ def test_notion_indisponivel_sem_cache_registra_falha() -> None:
 
     with pytest.raises(ErroDeSincronizacao):
         caso.executar()
+
+
+# --- tentativa registrada, para /status ler sem sincronizar de novo (ticket 15) --
+
+
+def test_sincronizacao_bem_sucedida_registra_tentativa_sem_erro() -> None:
+    repositorio = RepositorioFalso()
+    caso = SincronizarColecao(
+        leitor=LeitorFalso(ColecaoValida(itens=())),
+        repositorio=repositorio,
+        pagina_id=PAGINA,
+        relogio=RelogioFixo(),
+    )
+
+    caso.executar()
+
+    assert repositorio.tentativas == [TentativaDeSincronizacao(instante=AGORA, erro=None)]
+
+
+def test_falha_com_cache_registra_a_tentativa_com_o_erro() -> None:
+    anterior = SnapshotPersistido(
+        identificador="snap-1", colecao=ColecaoValida(itens=()), instante=ANTES
+    )
+    repositorio = RepositorioFalso(anterior)
+    caso = SincronizarColecao(
+        leitor=LeitorFalso(ErroDeSincronizacao("Notion respondeu HTTP 504")),
+        repositorio=repositorio,
+        pagina_id=PAGINA,
+        relogio=RelogioFixo(),
+    )
+
+    caso.executar()
+
+    assert repositorio.tentativas == [
+        TentativaDeSincronizacao(instante=AGORA, erro="Notion respondeu HTTP 504")
+    ]
+
+
+def test_falha_sem_cache_tambem_registra_a_tentativa_antes_de_propagar() -> None:
+    repositorio = RepositorioFalso(None)
+    caso = SincronizarColecao(
+        leitor=LeitorFalso(ErroDeSincronizacao("Notion respondeu HTTP 504")),
+        repositorio=repositorio,
+        pagina_id=PAGINA,
+        relogio=RelogioFixo(),
+    )
+
+    with pytest.raises(ErroDeSincronizacao):
+        caso.executar()
+
+    assert repositorio.tentativas == [
+        TentativaDeSincronizacao(instante=AGORA, erro="Notion respondeu HTTP 504")
+    ]
