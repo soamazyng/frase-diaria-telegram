@@ -36,6 +36,23 @@ Parameters:
     Description: >
       ID numérico imutável do repositório (`gh api repos/<dono>/<repo> --jq .id`).
       Mesma nuance de IdDoProprietarioGitHub.
+  StackGerenciadaPeloSAM:
+    Type: String
+    Default: aws-sam-cli-managed-default
+    Description: >
+      Stack que `sam deploy --resolve-s3` cria/usa para hospedar o bucket de
+      artefatos, quando nenhum `--s3-bucket` é dado explicitamente. Não é
+      exclusiva deste projeto — é compartilhada por qualquer app SAM na
+      conta que use `--resolve-s3` sem bucket próprio —, mas hoje é a única
+      (conta de projeto único). Criada no ticket 03 (publicação manual, com
+      `perfil-padrao`, permissões amplas); o papel de publicação do CI/CD
+      não tinha acesso a ela, e o primeiro `sam deploy` real do ticket 18
+      falhou com AccessDenied em `cloudformation:CreateChangeSet` sobre
+      esta stack até este parâmetro ser adicionado.
+  BucketGerenciadoPeloSAM:
+    Type: String
+    Default: aws-sam-cli-managed-default-samclisourcebucket-afhcijvri5mn
+    Description: "Nome do bucket S3 dentro da stack acima (Output SourceBucket, conferido ao vivo)."
   BranchDePublicacao:
     Type: String
     Default: develop
@@ -218,6 +235,34 @@ Resources:
                   # (PassRole aberto + deploy de Lambda seria escalonamento de
                   # privilégio; verificado na skill aws-iam).
                   - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Prefixo}-app-*"
+              - Sid: StackDoBucketGerenciadoPeloSAM
+                Effect: Allow
+                Action:
+                  # `sam deploy --resolve-s3` verifica/usa esta stack a cada
+                  # publicação, mesmo sem alteração real nela — por isso
+                  # precisa do fluxo de changeset, não só de leitura. Nunca
+                  # CreateStack/UpdateStack: a stack já existe (ticket 03) e
+                  # este papel não deve poder recriá-la nem alterá-la, só
+                  # confirmar seu estado atual.
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${StackGerenciadaPeloSAM}/*"
+              - Sid: BucketDeArtefatosGerenciadoPeloSAM
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}/*"
 
   # Assumido pelo workflow periódico de reconciliação de publicações (ticket
   # 20, ainda não construído): por enquanto só leitura, porque a lógica de
