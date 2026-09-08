@@ -1,0 +1,404 @@
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from typing import Any
+from uuid import uuid4
+
+from boto3.dynamodb.conditions import Key
+
+from frase_diaria.aplicacao.diagnostico import erro_sanitizado
+from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
+from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
+from frase_diaria.dominio.tempo import em_utc
+
+
+@dataclass(frozen=True)
+class RepositorioDePedidosDynamo:
+    """Pedidos, partes entregues e tentativas.
+
+    Um pedido ocupa vários itens sob a mesma partição:
+
+    - `sk = "pedido"` — o estado corrente
+    - `sk = "parte#NNN"` — uma parte confirmada, com o texto enviado
+    - `sk = "tentativa#<sequencial>"` — o histórico de execuções
+
+    Manter partes e tentativas fora do item do pedido é o que impede um item de
+    crescer sem limite: o histórico não expira, e o teto de 400 KB do DynamoDB
+    chegaria antes do fim do projeto.
+    """
+
+    tabela: Any
+    versao: str = "desenvolvimento"
+    bot_legado: str | None = None
+
+    def _identidade_legada(self, identidade: str) -> str | None:
+        if self.bot_legado is not None and identidade.startswith(f"extra#{self.bot_legado}#"):
+            return "extra#" + identidade.rsplit("#", 1)[-1]
+        return None
+
+    def chave_do_pedido(self, identidade: str) -> str:
+        """Chave compartilhada pelas escritas transacionais e pelo repositório."""
+        return f"pedido#{self._identidade_legada(identidade) or identidade}"
+
+    def criar_se_ausente(self, pedido: Pedido, instante: datetime) -> bool:
+        """Cria o pedido. Devolve False se a identidade já existia.
+
+        Escrita condicional, e não leitura seguida de escrita: um `/frase`
+        reentregue pelo Telegram chega concorrente com o original.
+        """
+        try:
+            self.tabela.put_item(
+                Item={
+                    "pk": self.chave_do_pedido(pedido.identidade),
+                    "sk": "pedido",
+                    "identidade": self._identidade_legada(pedido.identidade) or pedido.identidade,
+                    "identidade_atual": pedido.identidade,
+                    "origem": pedido.origem.value,
+                    "chat_id": pedido.chat_id,
+                    "estado": pedido.estado_legado,
+                    "estado_atual": pedido.estado.value,
+                    "motivo_do_estado": pedido.motivo_do_estado,
+                    "criado_em": em_utc(instante).isoformat(timespec="microseconds"),
+                    "tentativa_unica": pedido.tentativa_unica,
+                    **(
+                        {}
+                        if pedido.estado.terminal
+                        else {
+                            "pendencia": "pedidos",
+                            "processar_em": em_utc(pedido.proxima_tentativa or instante).isoformat(
+                                timespec="microseconds"
+                            ),
+                        }
+                    ),
+                    **(
+                        {"prazo": em_utc(pedido.prazo).isoformat(timespec="microseconds")}
+                        if pedido.prazo is not None
+                        else {}
+                    ),
+                },
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+        return True
+
+    def obter(self, identidade: str) -> Pedido | None:
+        item = self.tabela.get_item(
+            Key={"pk": self.chave_do_pedido(identidade), "sk": "pedido"},
+            ConsistentRead=True,
+        ).get("Item")
+        if item is None:
+            return None
+        pedido = Pedido(
+            identidade=str(item.get("identidade_atual", item["identidade"])),
+            origem=Origem(item["origem"]),
+            chat_id=int(item["chat_id"]),
+            estado=EstadoDoPedido(item.get("estado_atual", item["estado"])),
+            frase_reservada=item.get("frase_reservada") or None,
+            motivo_do_estado=str(item.get("motivo_do_estado") or "estado legado"),
+            proxima_tentativa=(
+                em_utc(datetime.fromisoformat(item["processar_em"]))
+                if item.get("processar_em")
+                else None
+            ),
+            prazo=(em_utc(datetime.fromisoformat(item["prazo"])) if item.get("prazo") else None),
+            tentativa_unica=bool(item.get("tentativa_unica", False)),
+        )
+        # Uma versão antiga pode avançar o estado sem conhecer estado_atual.
+        if pedido.estado_legado != item["estado"]:
+            pedido = replace(
+                pedido, estado=EstadoDoPedido(item["estado"]), motivo_do_estado="estado legado"
+            )
+        return pedido
+
+    def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None:
+        """Atualiza um pedido existente.
+
+        A condição impede o upsert que o `update_item` faria por padrão: salvar o
+        estado de um pedido nunca criado o inventaria na tabela. Quando
+        `sequencial` é informado, ele precisa ser o dono do lease vigente — é o
+        que impede um executor cujo lease já foi transferido de confirmar um
+        estado (ticket 09).
+        """
+        valores: dict[str, Any] = {
+            ":e": pedido.estado_legado,
+            ":atual": pedido.estado.value,
+            ":m": pedido.motivo_do_estado,
+            ":f": pedido.frase_reservada or "",
+            ":i": self._identidade_legada(pedido.identidade) or pedido.identidade,
+            ":identidade_atual": pedido.identidade,
+            ":o": pedido.origem.value,
+            ":c": pedido.chat_id,
+        }
+        expressao = (
+            "SET estado = :e, estado_atual = :atual, motivo_do_estado = :m, frase_reservada = :f, "
+            "identidade_atual = :identidade_atual, "
+            "identidade = :i, origem = :o, chat_id = :c"
+        )
+        if pedido.estado.terminal:
+            expressao += " REMOVE pendencia, processar_em"
+        else:
+            valores[":p"] = "pedidos"
+            expressao += ", pendencia = :p"
+            if pedido.proxima_tentativa is not None:
+                valores[":t"] = em_utc(pedido.proxima_tentativa).isoformat(timespec="microseconds")
+                expressao += ", processar_em = :t"
+            else:
+                expressao += ", processar_em = if_not_exists(processar_em, criado_em)"
+        terminais = [estado for estado in EstadoDoPedido if estado.terminal]
+        for indice, estado in enumerate(terminais):
+            valores[f":terminal{indice}"] = estado.value
+        condicao = (
+            "attribute_exists(pk) AND NOT estado IN ("
+            + ", ".join(f":terminal{i}" for i in range(len(terminais)))
+            + ")"
+        )
+        if sequencial is not None:
+            valores[":lease"] = sequencial
+            condicao += " AND (attribute_not_exists(lease_dono) OR lease_dono = :lease)"
+        try:
+            self.tabela.update_item(
+                Key={"pk": self.chave_do_pedido(pedido.identidade), "sk": "pedido"},
+                UpdateExpression=expressao,
+                ExpressionAttributeValues=valores,
+                ConditionExpression=condicao,
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            if sequencial is None:
+                raise
+            # A condição reúne dois motivos possíveis — o pedido já chegou a um
+            # estado terminal, ou o lease já foi transferido — e os dois dizem a
+            # mesma coisa para quem chama: outro executor já avançou o pedido.
+            raise ConflitoDeConcorrencia("outro executor já avançou este pedido") from None
+
+    def assumir_lease(
+        self, pedido: str, sequencial: int, agora: datetime, duracao: timedelta
+    ) -> None:
+        """Reivindica a exclusividade sobre o envio deste pedido por tempo limitado.
+
+        Um `sequencial` vem de `registrar_tentativa`, que já é atômico e
+        monotônico: nenhum outro executor pode ter obtido um valor maior antes
+        deste, então a reivindicação de um lease inexistente, mais antigo ou
+        igual ao próprio sempre pode prosseguir — a igualdade é o que torna a
+        chamada idempotente: um retry automático do SDK sobre a mesma
+        tentativa, depois que a primeira já teve sucesso, não pode ser
+        recusado como se fosse de outro executor. Falha apenas quando outro
+        executor já detém um lease **mais novo** — sinal de que esta tentativa
+        foi superada e não deve prosseguir a enviar nem confirmar nada (AC03).
+        Um lease vencido pode ser assumido por qualquer sequencial, o que
+        evita bloqueio permanente após uma queda (ticket 09).
+        """
+        agora_utc = em_utc(agora)
+        expira_em = agora_utc + duracao
+        try:
+            self.tabela.update_item(
+                Key={"pk": self.chave_do_pedido(pedido), "sk": "pedido"},
+                UpdateExpression="SET lease_dono = :seq, lease_expira_em = :exp",
+                ConditionExpression=(
+                    "attribute_exists(pk) AND ("
+                    "attribute_not_exists(lease_dono) OR lease_dono <= :seq "
+                    "OR lease_expira_em <= :agora)"
+                ),
+                ExpressionAttributeValues={
+                    ":seq": sequencial,
+                    ":exp": expira_em.isoformat(timespec="microseconds"),
+                    ":agora": agora_utc.isoformat(timespec="microseconds"),
+                },
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
+
+    def registrar_intencao_parte(
+        self, pedido: str, indice: int, texto: str, instante: datetime
+    ) -> None:
+        """Registra a intenção de enviar uma parte antes do envio externo.
+
+        A intenção é um rastro operacional: se o processo cair antes da confirmação,
+        as próximas leituras podem distinguir "nunca confirmado" de "confirmado".
+        """
+        self.tabela.put_item(
+            Item={
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"parte#{indice:03d}",
+                "indice": indice,
+                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "texto": texto,
+                "estado": "intencao",
+                "intencao_em": em_utc(instante).isoformat(timespec="microseconds"),
+            }
+        )
+
+    def confirmar_parte(
+        self,
+        pedido: str,
+        indice: int,
+        texto: str,
+        message_id: int,
+        instante: datetime,
+        sequencial: int | None = None,
+    ) -> None:
+        """Registra uma parte como entregue, com o texto que foi de fato enviado.
+
+        Guardar o texto — e não uma referência à frase — é o que preserva o
+        histórico quando a origem muda depois (spec, 4.8). Quando `sequencial` é
+        informado, a confirmação só vale se ainda for o dono do lease: é a
+        garantia de que um executor superado não confirma entrega (AC03).
+        """
+        item = {
+            "pk": self.chave_do_pedido(pedido),
+            "sk": f"parte#{indice:03d}",
+            "indice": indice,
+            "identidade": Pedido.identidade_de_parte(pedido, indice),
+            "texto": texto,
+            "message_id": message_id,
+            "estado": "confirmada",
+            "confirmada_em": em_utc(instante).isoformat(timespec="microseconds"),
+        }
+        if sequencial is None:
+            self.tabela.put_item(Item=item)
+            return
+        nome = self.tabela.name
+        try:
+            self.tabela.meta.client.transact_write_items(
+                TransactItems=[
+                    {
+                        "ConditionCheck": {
+                            "TableName": nome,
+                            "Key": {"pk": self.chave_do_pedido(pedido), "sk": "pedido"},
+                            "ConditionExpression": (
+                                "attribute_not_exists(lease_dono) OR lease_dono = :seq"
+                            ),
+                            "ExpressionAttributeValues": {":seq": sequencial},
+                        }
+                    },
+                    {"Put": {"TableName": nome, "Item": item}},
+                ]
+            )
+        except self.tabela.meta.client.exceptions.TransactionCanceledException:
+            raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
+
+    def marcar_parte_incerta(
+        self, pedido: str, indice: int, motivo: str, instante: datetime
+    ) -> None:
+        """Marca a parte como incerta para suspender reenvio automático.
+
+        A parte pode ter sido entregue do ponto de vista do Telegram, mas a
+        confirmação durável ainda não foi persistida. Em vez de duplicar,
+        registramos o estado incerto e evitamos reenvio automático.
+        """
+        self.tabela.put_item(
+            Item={
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"parte#{indice:03d}",
+                "indice": indice,
+                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "estado": "incerto",
+                "motivo": motivo,
+                "incerta_em": em_utc(instante).isoformat(timespec="microseconds"),
+            }
+        )
+
+    def indices_confirmados(self, pedido: str) -> set[int]:
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") != "incerto"
+            and item.get("estado") != "intencao"
+            and item.get("message_id") not in (None, 0)
+        }
+
+    def indices_incertos(self, pedido: str) -> set[int]:
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") == "incerto"
+        }
+
+    def indices_intencoes(self, pedido: str) -> set[int]:
+        return {
+            int(item["indice"])
+            for item in self._listar_itens(pedido, "parte#")
+            if item.get("estado") == "intencao"
+        }
+
+    def buscar_vencidos(self, instante: datetime) -> list[Pedido]:
+        """Consulta somente pendências; revalida o índice eventualmente consistente."""
+        agora = em_utc(instante)
+        argumentos: dict[str, Any] = {
+            "IndexName": "pendencias",
+            "KeyConditionExpression": Key("pendencia").eq("pedidos")
+            & Key("processar_em").lte(agora.isoformat(timespec="microseconds")),
+        }
+        pedidos: list[Pedido] = []
+        while True:
+            resposta = self.tabela.query(**argumentos)
+            for item in resposta.get("Items", []):
+                pedido = self.obter(str(item["pk"]).removeprefix("pedido#"))
+                if (
+                    pedido is not None
+                    and not pedido.estado.terminal
+                    and pedido.proxima_tentativa is not None
+                    and pedido.proxima_tentativa <= agora
+                ):
+                    pedidos.append(pedido)
+            if not resposta.get("LastEvaluatedKey"):
+                return pedidos
+            argumentos["ExclusiveStartKey"] = resposta["LastEvaluatedKey"]
+
+    def registrar_tentativa(
+        self, pedido: str, resultado: str, erro: str | None, instante: datetime
+    ) -> int:
+        ocorrida_em = em_utc(instante).isoformat(timespec="microseconds")
+        contador = self.tabela.update_item(
+            Key={"pk": self.chave_do_pedido(pedido), "sk": "sequencia-de-tentativas"},
+            UpdateExpression="ADD sequencial :um",
+            ExpressionAttributeValues={":um": 1},
+            ReturnValues="UPDATED_NEW",
+        )
+        sequencial = int(contador["Attributes"]["sequencial"])
+        self.tabela.put_item(
+            Item={
+                "pk": self.chave_do_pedido(pedido),
+                "sk": f"tentativa#{sequencial:020d}",
+                "identidade": Pedido.identidade_de_tentativa(pedido, sequencial),
+                "sequencial": sequencial,
+                "resultado": resultado,
+                "erro": erro_sanitizado(erro),
+                "ocorrida_em": ocorrida_em,
+                "versao": self.versao,
+                "correlacao": uuid4().hex,
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        return sequencial
+
+    def finalizar_tentativa(
+        self, pedido: str, sequencial: int, resultado: str, erro: str | None, instante: datetime
+    ) -> None:
+        self.tabela.update_item(
+            Key={"pk": self.chave_do_pedido(pedido), "sk": f"tentativa#{sequencial:020d}"},
+            UpdateExpression="SET resultado = :r, erro = :e, finalizada_em = :t",
+            ExpressionAttributeValues={
+                ":r": resultado,
+                ":e": erro_sanitizado(erro),
+                ":t": em_utc(instante).isoformat(timespec="microseconds"),
+            },
+            ConditionExpression="attribute_exists(pk)",
+        )
+
+    def listar_tentativas(self, pedido: str) -> list[dict[str, Any]]:
+        """Recupera o histórico, incluindo tentativas anteriores ao ticket 07."""
+        return self._listar_itens(pedido, "tentativa#")
+
+    def _listar_itens(self, pedido: str, prefixo: str) -> list[dict[str, Any]]:
+        argumentos: dict[str, Any] = {
+            "KeyConditionExpression": Key("pk").eq(self.chave_do_pedido(pedido))
+            & Key("sk").begins_with(prefixo),
+            "ConsistentRead": True,
+        }
+        itens: list[dict[str, Any]] = []
+        while True:
+            resposta = self.tabela.query(**argumentos)
+            itens.extend(resposta.get("Items", []))
+            if not resposta.get("LastEvaluatedKey"):
+                return itens
+            argumentos["ExclusiveStartKey"] = resposta["LastEvaluatedKey"]

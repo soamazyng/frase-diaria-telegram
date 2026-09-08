@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Aplicação do frase-diaria-telegram: entrada HTTP, worker de entrega e logs.
+  Republicar esta stack não toca na stack de dados, que guarda o histórico.
+
+Parameters:
+  Prefixo:
+    Type: String
+    Default: frase-diaria
+    Description: Prefixo dos nomes dos recursos; precisa casar com a stack de dados.
+  Versao:
+    Type: String
+    Default: desenvolvimento
+    Description: >
+      Identificador da versão publicada, devolvido por GET /health. O pipeline
+      injeta aqui o SHA do commit avaliado.
+  RetencaoDeLogsEmDias:
+    Type: Number
+    Default: 14
+    Description: Retenção dos logs técnicos. Não substituem o histórico, que vive no DynamoDB.
+
+Globals:
+  Function:
+    Runtime: python3.13
+    # 128 MB é o mínimo; o trabalho é de E/S, não de CPU.
+    MemorySize: 128
+    Timeout: 30
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        VERSAO_DA_APLICACAO: !Ref Versao
+        TABELA_ESTADO:
+          Fn::ImportValue: !Sub "${Prefixo}-TabelaNome"
+        FUNCAO_WORKER: !Sub "${Prefixo}-worker"
+
+Resources:
+  # Stage $default não prefixa o caminho: GET /health chega ao FastAPI como
+  # /health. Uma REST API com stage Prod entregaria /Prod/health e daria 404.
+  #
+  # As rotas vêm dos Events das funções. Declará-las também num DefinitionBody
+  # faria o SAM fundir duas fontes que podem divergir em silêncio.
+  Http:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      Description: !Sub "Entrada HTTP do ${Prefixo}"
+
+  # A fronteira HTTP: valida, registra o pedido e acorda o worker. Nunca entrega
+  # a frase — isso exigiria trabalho depois de responder ao Telegram.
+  Funcao:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-http"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.http.lambda_handler.handler
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            # Permissões específicas por função: esta só registra comandos e cria
+            # pedidos. Não lê, não apaga, não transaciona — quem faz isso é o
+            # worker. Permissão que a função não usa é superfície de ataque à toa.
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource:
+                Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+            - &leituraDosSegredos
+              Effect: Allow
+              Action:
+                - ssm:GetParametersByPath
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/*"
+            # SecureString usa a chave gerenciada do SSM; sem isto a decifragem falha.
+            - &decifrarSegredos
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+            # Acordar o worker: só esta função, nada além dela.
+            - &acordarWorker
+              Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-worker"
+      Events:
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Http
+            Path: /health
+            Method: GET
+        Webhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Http
+            Path: /telegram/webhook
+            Method: POST
+
+  # O worker: lê o pedido da persistência e entrega. Sem gatilho HTTP nem
+  # agendado — só invocação assíncrona, disparada pela fronteira HTTP, pelo
+  # agendador ou pelo reconciliador abaixo. Manter os três gatilhos fora do
+  # worker preserva a permissão mínima por função: só quem decide QUANDO
+  # entregar aciona; só o worker sabe COMO.
+  Worker:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-worker"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.worker_handler.handler
+      # Mais folgado que a fronteira HTTP: aqui há várias chamadas ao Telegram.
+      Timeout: 60
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            # O worker é quem lê e transaciona: pedido, ciclo, partes, tentativas.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+                - dynamodb:TransactWriteItems
+                - dynamodb:TransactGetItems
+              Resource:
+                - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+                - !Sub
+                  - "${Arn}/index/*"
+                  - Arn:
+                      Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+            - *leituraDosSegredos
+            - *decifrarSegredos
+
+  # Dispara a diária às 08:00 America/Sao_Paulo (spec, 4.5; AC01). O
+  # EventBridge Scheduler resolve o fuso: nenhuma conversão manual para UTC, e
+  # o horário-alvo continua correto mesmo se o fuso local um dia mudar de
+  # offset. Só materializa o pedido e acorda o worker — nunca entrega.
+  AgendadorDiario:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-agendador-diario"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.agendador_handler.handler
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            # Só cria o pedido diário (escrita condicional); não lê, não
+            # transaciona — isso é do worker.
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource:
+                Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+            - *leituraDosSegredos
+            - *decifrarSegredos
+            - *acordarWorker
+      Events:
+        Agendamento:
+          Type: ScheduleV2
+          Properties:
+            # Nome explícito: sem ele, o CloudFormation gera o nome físico
+            # "AgendadorDiarioAgendamento" (sem o prefixo), e a policy IAM do
+            # papel de publicação (infra/bootstrap.yaml, escopada em
+            # schedule/default/${Prefixo}-*) nunca autoriza esse recurso —
+            # achado ao exercitar o pipeline de verdade pela primeira vez
+            # (ticket 18): create falhou com AccessDenied em
+            # scheduler:GetSchedule, CloudFormation fez rollback limpo.
+            Name: !Sub "${Prefixo}-agendador-diario"
+            ScheduleExpression: "cron(0 8 * * ? *)"
+            ScheduleExpressionTimezone: "America/Sao_Paulo"
+            FlexibleTimeWindow:
+              Mode: "OFF"
+            Description: !Sub "Dispara a diária do ${Prefixo} às 08:00 America/Sao_Paulo"
+
+  # Recupera pendências a cada cinco minutos: pedidos vencidos de qualquer
+  # origem (não só a diária) e, dentro da janela até o meio-dia local, a
+  # diária ausente — cobrindo a falha do disparo acima (spec, 4.5).
+  Reconciliador:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub "${Prefixo}-reconciliador"
+      CodeUri: ..
+      Handler: frase_diaria.infraestrutura.reconciliador_handler.handler
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            # Consulta o índice de pendências (Query), lê cada pedido vencido
+            # (GetItem, dentro de buscar_vencidos) e cria a diária ausente
+            # (PutItem condicional) — nunca transaciona, isso é do worker.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:Query
+              Resource:
+                - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+                - !Sub
+                  - "${Arn}/index/*"
+                  - Arn:
+                      Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
+            - *leituraDosSegredos
+            - *decifrarSegredos
+            - *acordarWorker
+      Events:
+        Varredura:
+          Type: ScheduleV2
+          Properties:
+            # Mesmo motivo do Agendamento acima: nome explícito para casar
+            # com o escopo schedule/default/${Prefixo}-* do IAM.
+            Name: !Sub "${Prefixo}-reconciliador"
+            ScheduleExpression: "rate(5 minutes)"
+            FlexibleTimeWindow:
+              Mode: "OFF"
+            Description: !Sub "Reconcilia pendências do ${Prefixo} a cada 5 minutos"
+
+  # Declarados explicitamente para controlar a retenção. Sem isso a Lambda cria
+  # os grupos com retenção infinita, que crescem e passam a custar.
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-http"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+  LogGroupWorker:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-worker"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+  LogGroupAgendadorDiario:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-agendador-diario"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+  LogGroupReconciliador:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Prefixo}-reconciliador"
+      RetentionInDays: !Ref RetencaoDeLogsEmDias
+
+Outputs:
+  UrlHealth:
+    Description: URL pública do diagnóstico.
+    Value: !Sub "https://${Http}.execute-api.${AWS::Region}.${AWS::URLSuffix}/health"
+  UrlWebhook:
+    Description: URL a registrar no Telegram via setWebhook.
+    Value: !Sub "https://${Http}.execute-api.${AWS::Region}.${AWS::URLSuffix}/telegram/webhook"
+  VersaoPublicada:
+    Value: !Ref Versao

@@ -1,0 +1,399 @@
+name: CI/CD develop -> main
+
+# Só push em develop, nunca pull_request/pull_request_target: o fluxo não
+# pode depender de um evento de PR produzido pelo token padrão do Actions,
+# que tem regras próprias de disparo e aprovação (ticket 17; spec, 4.11).
+#
+# Um único workflow, quatro jobs encadeados — a proposta técnica da spec é
+# "encadear criação/localização de PR e CI/CD no próprio workflow de push"
+# (4.11), evitando reconsultar o PR duas vezes em arquivos separados:
+#   garantir-pr -> verificar -> construir -> publicar
+on:
+  push:
+    branches:
+      - develop
+
+# Negado por padrão no topo: um bloco `permissions:` de job SUBSTITUI o do
+# topo para aquele job, em vez de somar — a elevação real mora só em cada job
+# (exercitado ao vivo no ticket 17: `contents: read` só no topo não bastava).
+permissions: {}
+
+jobs:
+  garantir-pr:
+    name: Garantir PR develop -> main
+    runs-on: ubuntu-latest
+    permissions:
+      # contents: read é o piso: mesmo sem checkout, `gh pr list`/`gh pr
+      # create` resolvem metadados do repositório (a branch padrão) via
+      # GraphQL, e sem esta permissão a chamada falha com "Resource not
+      # accessible by integration" (exercitado ao vivo no ticket 17).
+      contents: read
+      pull-requests: write
+    outputs:
+      numero-pr: ${{ steps.pr.outputs.numero }}
+    steps:
+      # Sem actions/checkout: gh compara os refs remotamente, e nenhum passo
+      # aqui precisa do conteúdo do repositório — menos superfície, nenhuma
+      # credencial de git persistida à toa.
+      - name: Garantir que existe um PR aberto develop -> main
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          numero="$(gh pr list --base main --head develop --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$numero" ]; then
+            echo "Já existe um PR aberto entre develop e main (#$numero); o push atual entra nele."
+            echo "numero=$numero" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if saida="$(gh pr create \
+            --base main \
+            --head develop \
+            --title 'develop -> main' \
+            --body 'PR automático (ticket 17). Testes, build e publicação em produção rodam a partir de develop neste mesmo workflow (ticket 18), antes deste merge; o merge continua manual (spec, 4.11).' \
+            2>&1)"; then
+            echo "$saida"
+            numero="$(gh pr list --base main --head develop --state open --json number --jq '.[0].number // empty')"
+            echo "numero=$numero" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # "No commits between" e "already exists" são os dois desfechos
+          # esperados sem PR novo: nenhuma diferença para main, ou uma
+          # corrida com outra execução deste mesmo workflow. Qualquer outra
+          # falha propaga de verdade.
+          if echo "$saida" | grep -qiE "no commits between|already exists"; then
+            echo "$saida"
+            echo "Nada a fazer: sem diferenças para main, ou PR já criado por outra execução."
+            echo "numero=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$saida" >&2
+          exit 1
+
+  # Testes, análise estática e validação SAM contra o SHA imutável do push
+  # (spec 4.11, passo 2; AC20). Falha aqui impede os jobs seguintes por
+  # `needs:` — nenhum artefato chega a ser construído nem publicado.
+  verificar:
+    name: Testes, análise estática e validação SAM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      # Seguro cancelar: nenhum job daqui até "construir" muta nada fora do
+      # runner efêmero. Um push novo cancela a verificação do push anterior
+      # em vez de esperar — "apenas trabalhos sem mutação podem ser
+      # cancelados livremente" (checklist do ticket 18).
+      group: verificar-frase-diaria-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      SAM_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: make instalar
+        run: make instalar
+
+      - name: make verificar (lint + testes)
+        run: make verificar
+
+      - name: make validar-sam
+        # Não exige credencial AWS: cfn-lint roda localmente. Exercitado ao
+        # vivo sem nenhuma credencial no ambiente antes deste workflow
+        # existir, para não conceder OIDC a um job que não precisa dele.
+        run: make validar-sam
+
+  # Constrói o artefato exatamente uma vez, identificado pelo SHA do job (via
+  # o nome do artefato do Actions) e por um checksum próprio — "publicar
+  # exatamente o artefato avaliado" (spec 4.11, passo 3).
+  construir:
+    name: Construir artefato
+    needs: verificar
+    runs-on: ubuntu-latest
+    concurrency:
+      group: construir-frase-diaria-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    outputs:
+      checksum: ${{ steps.checksum.outputs.valor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: make construir-app
+        env:
+          SAM_CLI_TELEMETRY: "0"
+        run: make construir-app
+
+      - name: Calcular checksum do artefato
+        id: checksum
+        run: |
+          set -euo pipefail
+          raiz=".aws-sam/build"
+          soma="$(find "$raiz" -type f ! -name CHECKSUM.txt -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          echo "$soma" > "$raiz/CHECKSUM.txt"
+          echo "Checksum do artefato: $soma"
+          echo "valor=$soma" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artefato-${{ github.sha }}
+          path: .aws-sam/build
+          # Curto de propósito: o artefato só precisa sobreviver do fim deste
+          # job até o job "publicar" do mesmo workflow run, minutos depois.
+          # O histórico do produto vive no DynamoDB, não aqui.
+          retention-days: 1
+          if-no-files-found: error
+
+  # Publica exatamente o artefato construído acima, dentro da exclusão mútua
+  # de produção (spec 4.11, passos 4-8; AC21, AC22).
+  publicar:
+    name: Publicar em produção
+    needs: [construir, garantir-pr]
+    runs-on: ubuntu-latest
+    concurrency:
+      # Grupo fixo (não por ref): só existe uma produção. Sem
+      # cancel-in-progress — este job muta a stack de aplicação; cancelar no
+      # meio deixaria um deploy pela metade. Um push novo enfileira atrás
+      # deste, nunca o interrompe (checklist do ticket 18).
+      group: producao-frase-diaria
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # só este job assume papel AWS (AGENTS.md)
+      pull-requests: read
+      deployments: write
+    env:
+      SAM_CLI_TELEMETRY: "0"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      STACK_APLICACAO: frase-diaria-app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `make publicar-app-artefato` chama `uvx` (via a variável SAM do
+      # Makefile) — sem este passo, ausente aqui até a primeira execução
+      # real do pipeline expor o erro (`uvx: not found`), nenhuma versão do
+      # SAM CLI existe no runner deste job.
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: artefato-${{ github.sha }}
+          path: .aws-sam/build
+
+      - name: Conferir checksum do artefato baixado
+        run: |
+          set -euo pipefail
+          raiz=".aws-sam/build"
+          esperado="$(cat "$raiz/CHECKSUM.txt")"
+          obtido="$(find "$raiz" -type f ! -name CHECKSUM.txt -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          if [ "$esperado" != "$obtido" ]; then
+            echo "::error::checksum do artefato baixado não confere com o calculado em 'construir' (esperado $esperado, obtido $obtido)"
+            exit 1
+          fi
+          echo "Checksum confere: $obtido"
+
+      - name: Reconsultar PR aberto, SHA atual e base de main
+        id: checar-atualidade
+        # Depois de esperar a exclusão mútua (o "concurrency:" do job acima),
+        # nunca presumir que este SHA ainda é o candidato válido — outro push
+        # pode ter avançado develop enquanto este job estava na fila
+        # (spec 4.11: "reconsultar PR aberto e SHA atual"; AC22).
+        run: |
+          set -euo pipefail
+
+          shaAtual="$(gh api "repos/$GH_REPO/git/ref/heads/develop" --jq .object.sha)"
+          if [ "$shaAtual" != "$GITHUB_SHA" ]; then
+            echo "SHA $GITHUB_SHA não é mais o HEAD de develop (atual: $shaAtual)."
+            echo "Publicação superada por um push mais recente; encerrando sem publicar."
+            echo "publicar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          abertos="$(gh pr list --base main --head develop --state open --json number --jq 'length')"
+          if [ "$abertos" -eq 0 ]; then
+            echo "Não há mais PR aberto develop -> main; encerrando sem publicar."
+            echo "publicar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # "Antes de publicar, exige-se que o conteúdo de develop inclua a
+          # base relevante de main" (checklist do ticket 18).
+          status="$(gh api "repos/$GH_REPO/compare/main...develop" --jq .status)"
+          case "$status" in
+            identical|ahead) ;;
+            *)
+              echo "::error::develop não inclui a base de main (status da comparação: $status); publicação bloqueada."
+              exit 1
+              ;;
+          esac
+
+          echo "publicar=sim" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar credenciais AWS (OIDC)
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          # ARN fixo (não é segredo — AC28; a trust policy em
+          # infra/bootstrap.yaml restringe quem pode assumi-lo, no formato
+          # imutável baseado em IDs — confirmado contra um token OIDC real
+          # nesta primeira execução do pipeline, ver docs/18). Este job NÃO
+          # declara `environment:` do Actions de propósito: isso mudaria o
+          # claim `sub` do token OIDC de "ref:refs/heads/develop" para
+          # "environment:<nome>", e a trust policy do papel exige
+          # exatamente o primeiro formato.
+          role-to-assume: arn:aws:iam::712790115760:role/frase-diaria-publicacao
+          aws-region: us-east-1
+          role-session-name: github-${{ github.run_id }}
+
+      - name: Registrar publicação em andamento
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        id: implantacao
+        env:
+          CHECKSUM_DO_ARTEFATO: ${{ needs.construir.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          corpo="$(jq -n --arg ref "$GITHUB_SHA" --arg descricao "checksum sha256:$CHECKSUM_DO_ARTEFATO" \
+            '{ref: $ref, environment: "producao", auto_merge: false, required_contexts: [], description: $descricao}')"
+          id="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          gh api --method POST "repos/$GH_REPO/deployments/$id/statuses" \
+            -f state=in_progress -f description="sam deploy em andamento"
+          # Criar aqui, com estado "success" mais adiante, é o que invalida a
+          # elegibilidade de merge da candidata anterior: por padrão a API de
+          # Deployments marca a implantação "success" anterior deste mesmo
+          # ambiente como "inactive" ao registrar uma nova (checklist do
+          # ticket 18: "publicação em andamento é registrada e a
+          # elegibilidade de merge da candidata anterior é invalidada").
+
+      - name: sam deploy (artefato já construído)
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        run: make publicar-app-artefato
+        env:
+          VERSAO: ${{ github.sha }}
+
+      - name: Verificar saúde, versão, dependências, webhook e agendamento
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        id: diagnostico
+        run: |
+          set -euo pipefail
+
+          saida="$(aws cloudformation describe-stacks --stack-name "$STACK_APLICACAO" --query 'Stacks[0].{status:StackStatus,outputs:Outputs}' --output json)"
+          status="$(echo "$saida" | jq -r .status)"
+          case "$status" in
+            *_COMPLETE) ;;
+            *) echo "::error::stack frase-diaria-app em estado inesperado: $status"; exit 1 ;;
+          esac
+          urlSaude="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="UrlHealth") | .OutputValue')"
+          versaoNaStack="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="VersaoPublicada") | .OutputValue')"
+          if [ "$versaoNaStack" != "$GITHUB_SHA" ]; then
+            echo "::error::VersaoPublicada da stack ($versaoNaStack) não confere com o SHA publicado ($GITHUB_SHA)"
+            exit 1
+          fi
+
+          # Saúde + versão ativa: /health é público, não consome frase nem
+          # envia mensagem.
+          respostaSaude="$(curl -sf --retry 5 --retry-delay 3 --retry-connrefused "$urlSaude")"
+          situacao="$(echo "$respostaSaude" | jq -r .situacao)"
+          versaoNoHealth="$(echo "$respostaSaude" | jq -r .versao)"
+          if [ "$situacao" != "ok" ] || [ "$versaoNoHealth" != "$GITHUB_SHA" ]; then
+            echo "::error::diagnóstico de /health reprovou a publicação (situacao=$situacao, versao=$versaoNoHealth)"
+            exit 1
+          fi
+
+          # Acesso às dependências: as quatro funções da stack precisam estar
+          # ativas e com a última atualização bem-sucedida (a permissão real
+          # de DynamoDB/SSM já foi exercitada pelo próprio `sam deploy`, que
+          # falharia se a policy estivesse errada; aqui só confirmamos que a
+          # função resultante está operável).
+          for funcao in http worker agendador-diario reconciliador; do
+            config="$(aws lambda get-function-configuration --function-name "frase-diaria-$funcao")"
+            estado="$(echo "$config" | jq -r .State)"
+            ultimaAtualizacao="$(echo "$config" | jq -r .LastUpdateStatus)"
+            if [ "$estado" != "Active" ] || [ "$ultimaAtualizacao" != "Successful" ]; then
+              echo "::error::frase-diaria-$funcao não está operável (State=$estado, LastUpdateStatus=$ultimaAtualizacao)"
+              exit 1
+            fi
+          done
+
+          # Configuração do webhook: a rota existe e exige o segredo antes de
+          # processar qualquer coisa — uma chamada sem o cabeçalho nunca
+          # chega a despachar comando, então não consome frase nem envia
+          # mensagem (dominio/autorizacao valida o segredo antes do chat_id).
+          urlWebhook="${urlSaude%/health}/telegram/webhook"
+          codigoWebhook="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$urlWebhook")"
+          if [ "$codigoWebhook" != "200" ]; then
+            echo "::error::POST sem segredo em /telegram/webhook devolveu $codigoWebhook (esperado 200 — recusa silenciosa por design)"
+            exit 1
+          fi
+
+          # Configuração de agendamento: os dois ScheduleV2 da stack existem
+          # e terminaram de implantar (via CloudFormation, sem exigir
+          # scheduler:ListSchedules — permissão que o papel de publicação não
+          # tem, e que este ticket optou por não ampliar).
+          agendamentos="$(aws cloudformation list-stack-resources --stack-name "$STACK_APLICACAO" \
+            --query "StackResourceSummaries[?ResourceType=='AWS::Scheduler::Schedule']" --output json)"
+          quantidade="$(echo "$agendamentos" | jq 'length')"
+          incompletos="$(echo "$agendamentos" | jq '[.[] | select(.ResourceStatus | endswith("_COMPLETE") | not)] | length')"
+          if [ "$quantidade" -ne 2 ] || [ "$incompletos" -ne 0 ]; then
+            echo "::error::agendamento inesperado: $quantidade recursos ScheduleV2, $incompletos incompletos (esperado 2 e 0)"
+            exit 1
+          fi
+
+          echo "Diagnóstico pós-publicação aprovado."
+
+      - name: Registrar resultado da publicação
+        if: always() && steps.implantacao.outputs.id != ''
+        env:
+          DESFECHO_DO_DIAGNOSTICO: ${{ steps.diagnostico.outcome }}
+          ID_DA_IMPLANTACAO: ${{ steps.implantacao.outputs.id }}
+        run: |
+          set -euo pipefail
+          # "Sucesso é registrado somente no SHA efetivamente publicado e
+          # ainda atual no PR" (checklist do ticket 18; AC21) — por isso esta
+          # reconsulta roda de novo aqui, e não apenas antes do deploy.
+          #
+          # Falha real de diagnóstico -> failure (reprova a publicação,
+          # checklist do ticket 18). Diagnóstico bom mas SHA já superado por
+          # push mais recente -> inactive, não success: a implantação foi
+          # saudável, só não é mais a candidata atual (AC22). Só "failure"
+          # derruba o check deste job; "inactive" continua um check verde
+          # para este commit, coerente com o que de fato aconteceu nele.
+          if [ "$DESFECHO_DO_DIAGNOSTICO" != "success" ]; then
+            estado=failure
+          else
+            shaAtual="$(gh api "repos/$GH_REPO/git/ref/heads/develop" --jq .object.sha)"
+            if [ "$shaAtual" = "$GITHUB_SHA" ]; then
+              estado=success
+            else
+              estado=inactive
+              echo "SHA $GITHUB_SHA não é mais o HEAD de develop ($shaAtual); publicação saudável, marcada inativa por ter sido superada."
+            fi
+          fi
+          gh api --method POST "repos/$GH_REPO/deployments/$ID_DA_IMPLANTACAO/statuses" \
+            -f state="$estado" -f description="diagnóstico pós-publicação: $DESFECHO_DO_DIAGNOSTICO"
+          [ "$estado" != "failure" ]

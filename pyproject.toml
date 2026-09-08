@@ -1,0 +1,54 @@
+[project]
+name = "frase-diaria-telegram"
+version = "0.1.0"
+description = "Bot pessoal que envia uma frase por dia no Telegram, lendo a coleção do Notion."
+requires-python = "==3.13.*"
+dependencies = [
+    "fastapi==0.115.6",
+    "mangum==0.19.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "httpx==0.28.1",
+    "ruff==0.8.6",
+    "mypy==1.14.1",
+    # boto3 já vem no runtime da Lambda; fica só em dev para não inflar o
+    # artefato. moto simula o DynamoDB nos testes, sem tocar na AWS real.
+    "boto3==1.35.99",
+    "boto3-stubs[dynamodb,ssm]==1.35.99",
+    "moto[dynamodb]==5.0.28",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/frase_diaria"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# --import-mode=importlib evita colisão de basename entre tests/<camada>/test_<mesmo_nome>.py
+addopts = "-q --strict-markers --import-mode=importlib"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+# .agents guarda skills de terceiros instaladas localmente; não é nosso código
+extend-exclude = [".agents"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+# N818 exige o sufixo "Error" em exceções. O vocabulário do domínio é português
+# (ver CLAUDE.md), e "ErroDoTelegram" já diz o que a regra quer garantir.
+ignore = ["N818"]
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+strict = true
+warn_unreachable = true

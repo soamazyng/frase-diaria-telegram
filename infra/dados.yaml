@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Recursos duráveis do frase-diaria-telegram. Fica em stack separada da aplicação
+  para que atualizar ou recuperar a aplicação nunca apague histórico.
+  Publique esta stack UMA vez; ela não muda a cada deploy.
+
+Parameters:
+  Prefixo:
+    Type: String
+    Default: frase-diaria
+    Description: Prefixo dos nomes dos recursos.
+
+Resources:
+  # DeletionPolicy e UpdateReplacePolicy em Retain: nem excluir a stack nem uma
+  # substituição de recurso apagam o histórico de frases entregues.
+  Tabela:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${Prefixo}-estado"
+      # On-demand: sem capacidade provisionada, sem custo fixo.
+      BillingMode: PAY_PER_REQUEST
+      # Retain protege o caminho CloudFormation; isto protege o caminho direto.
+      # Sem os dois, um DeleteTable avulso apaga o histórico de entregas.
+      DeletionProtectionEnabled: true
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: pendencia
+          AttributeType: S
+        - AttributeName: processar_em
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      GlobalSecondaryIndexes:
+        - IndexName: pendencias
+          KeySchema:
+            - AttributeName: pendencia
+              KeyType: HASH
+            - AttributeName: processar_em
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: projeto
+          Value: !Ref Prefixo
+
+Outputs:
+  TabelaNome:
+    Value: !Ref Tabela
+    Export:
+      Name: !Sub "${Prefixo}-TabelaNome"
+  TabelaArn:
+    Value: !GetAtt Tabela.Arn
+    Export:
+      Name: !Sub "${Prefixo}-TabelaArn"
