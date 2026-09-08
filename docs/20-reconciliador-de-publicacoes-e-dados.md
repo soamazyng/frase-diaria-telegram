@@ -148,20 +148,39 @@ Não se aplica `/code-review` de Standards/Spec em dois eixos nem
 `security-review` de aplicação — sem código Python nesta entrega, só
 infraestrutura (`infra/bootstrap.yaml`) e workflow YAML.
 
+## Correção definitiva da causa raiz (2026-09-08)
+
+**Decisão da usuária:** manter merge commit (spec 4.11), não fast-forward.
+`fast-forward only` foi cogitado, mas rejeitado por contradizer a proposta
+técnica explícita da spec ("merge commit preservando o histórico de dev",
+ligada a AC25/AC26/AC27/AC29) — mudar isso seria escopo novo, não correção
+de bug.
+
+**Fix aplicado nos dois lugares que presumiam "HEAD de main = SHA
+vinculado":** quando o HEAD de `main` tem dois parents (é um commit de
+merge, `parents[0]` = `main` anterior, `parents[1]` = ponta de `develop`
+incorporada — ordem confirmada ao vivo contra o commit de merge real do
+PR #2), usar `parents[1]` como o SHA relevante em vez do commit de merge
+em si:
+
+- `.github/workflows/pr-develop-main.yml`, passo "Reconsultar PR aberto,
+  SHA atual e base de main" (ticket 18): compara `develop` contra
+  `parents[1]`, não contra o HEAD literal de `main`.
+- `.github/workflows/reconciliador.yml`, passo "Avaliar se a versão ativa
+  precisa reconciliar" (este ticket): `shaEstavel` = `parents[1]`, o que
+  também corrige de quebra o problema do artefato "retenção expirada" —
+  agora aponta para o SHA que de fato passou pelo CI e tem artefato.
+
+**Consequência: o merge manual de `main` de volta em `develop` (`dffa16f`,
+feito ao vivo para destravar o pipeline) deixa de ser necessário daqui
+para frente.** A comparação agora resolve corretamente sem precisar que
+`develop` contenha o commit de merge como ancestral — ele já contém
+naturalmente `parents[1]` (é o próprio histórico de `develop`).
+`actionlint`/`shellcheck` sem achados nos dois arquivos após o fix.
+
 ## Próximo passo
 
-1. **Decidir a política de merge `develop -> main`, agora com dois pontos
-   de quebra confirmados ao vivo** (o guard de publicação do ticket 18 e o
-   caminho de reconciliação deste ticket) — não só o reconciliador.
-   Direções possíveis, nenhuma decidida: (a) exigir merge fast-forward de
-   `develop -> main` (sem commit de merge novo, elimina o problema na
-   raiz); (b) manter merge commit, mas tornar obrigatório mesclar `main`
-   de volta em `develop` logo em seguida (o que resolveu ao vivo desta
-   vez, mas depende de lembrar de fazer manualmente); (c) comparar contra
-   o primeiro parent do commit de merge em vez do HEAD literal, nos dois
-   lugares que presumem SHA vinculado.
-2. **Ticket 21** — proteção de `main` e merge manual — já não está mais
-   bloqueado por dependências (18 e 20 concluídos), mas herda o mesmo
-   achado: qualquer proteção de `main` que dependa de "HEAD de main = SHA
-   vinculado" precisa da mesma decisão do item 1 antes de ser implementada
-   em cima disso.
+1. **Ticket 21** — proteção de `main` e merge manual — segue não bloqueado
+   por dependências (18 e 20 concluídos) e a causa raiz do achado desta
+   sessão já está corrigida; nenhuma decisão de política de merge
+   pendente para começá-lo.

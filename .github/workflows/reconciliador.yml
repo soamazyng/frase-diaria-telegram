@@ -113,7 +113,22 @@ jobs:
             exit 0
           fi
 
-          shaEstavel="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          # "Versão estável" não é o HEAD literal de main: a spec (4.11)
+          # propõe merge commit preservando o histórico de dev, e um commit
+          # de merge nunca passa pelo pipeline — nenhum artefato existe para
+          # ele. Achado ao vivo em 2026-09-08 (ver docs/20): a primeira
+          # execução real deste passo, logo após o merge do PR #2, tratou o
+          # commit de merge como candidata abandonada por esse motivo.
+          # Quando o HEAD de main tem dois parents (é um commit de merge),
+          # o segundo parent é a ponta de develop realmente testada e
+          # publicada; é o SHA estável de verdade.
+          shaMain="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          qtdPais="$(gh api "repos/$GH_REPO/commits/$shaMain" --jq '.parents | length')"
+          if [ "$qtdPais" -eq 2 ]; then
+            shaEstavel="$(gh api "repos/$GH_REPO/commits/$shaMain" --jq '.parents[1].sha')"
+          else
+            shaEstavel="$shaMain"
+          fi
           versaoAtiva="$(aws cloudformation describe-stacks --stack-name "$STACK_APLICACAO" --output json 2>/dev/null \
             | jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="VersaoPublicada") | .OutputValue' || echo "")"
 
