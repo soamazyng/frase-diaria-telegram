@@ -4,13 +4,18 @@
 
 **Blocked by:** 19 — Recuperação da versão anterior, caso a caso.
 
-**Status:** ready-for-agent
+**Status:** implementado em 2026-09-08, não exercitado ao vivo — ver
+`docs/20-reconciliador-de-publicacoes-e-dados.md`. GitHub só ativa
+`schedule`/`workflow_dispatch` a partir da branch padrão (`main`); como o
+workflow só existe em `develop` até o merge do PR #2, nem o disparo manual
+de teste nem o cron horário podem rodar ainda — limitação estrutural, não
+pendência de implementação.
 
-- [ ] Um workflow periódico **de hora em hora** consulta o manifesto de publicação e o estado do PR, cobrindo runner interrompido e falha do evento de fechamento. *(Intervalo decidido pela usuária: 720 min/mês cabem nos 2.000 do plano Free; 5 em 5 minutos custaria ~US$53/mês em minutos excedentes.)*
-- [ ] O reconciliador adquire a mesma exclusão mútua de produção antes de agir, e reconsulta o estado após esperar.
-- [ ] Uma publicação registrada como "em andamento" há tempo demais é reconciliada em vez de ficar travando o grupo indefinidamente.
-- [ ] Deploys, rollback e fechamento de PR concorrentes não sobrescrevem uma versão mais recente por evento obsoleto (AC23).
-- [ ] Atualização e recuperação preservam histórico e compatibilidade dos dados (AC26).
-- [ ] Mudanças de dados são aditivas e legíveis pela versão anterior; nenhuma migração destrutiva entra no MVP.
-- [ ] O histórico não volta no tempo e mensagens já enviadas permanecem no Telegram, mesmo após recuperação.
+- [x] Um workflow periódico **de hora em hora** consulta o manifesto de publicação e o estado do PR, cobrindo runner interrompido e falha do evento de fechamento. *(implementado; só roda de verdade depois do merge para `main` — ver nota de status)*
+- [x] O reconciliador adquire a mesma exclusão mútua de produção antes de agir, e reconsulta o estado após esperar. *(mesmo `concurrency: group: producao-frase-diaria` dos tickets 18/19)*
+- [x] Uma publicação registrada como "em andamento" há tempo demais é reconciliada em vez de ficar travando o grupo indefinidamente. *(limite de 20min, marca `error` na API de Deployments)*
+- [x] Deploys, rollback e fechamento de PR concorrentes não sobrescrevem uma versão mais recente por evento obsoleto (AC23). *(garantido pela exclusão mútua + reconsulta de PR/versão ativa dentro da trava, mesmo padrão do AC22 dos tickets 18/19)*
+- [x] Atualização e recuperação preservam histórico e compatibilidade dos dados (AC26). *(garantido pela separação de stacks já existente desde o ticket 03 — a stack de aplicação nunca importa nem exporta nada que permita tocar a stack de dados; nenhuma lógica nova neste ticket mexe em dados)*
+- [x] Mudanças de dados são aditivas e legíveis pela versão anterior; nenhuma migração destrutiva entra no MVP. *(nenhuma migração de dados existe neste ticket nem em nenhum anterior — invariante arquitetural a respeitar em tickets futuros que toquem dados, não algo a implementar aqui)*
+- [x] O histórico não volta no tempo e mensagens já enviadas permanecem no Telegram, mesmo após recuperação. *(republicar código nunca toca o DynamoDB nem desfaz envios; consequência direta de a recuperação/reconciliação só trocar o artefato deployado)*
 - [x] O custo da execução periódica entra na estimativa registrada no ticket 01 (`docs/01-custo-e-elegibilidade.md`, seção 4).

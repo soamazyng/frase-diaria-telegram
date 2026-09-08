@@ -157,10 +157,14 @@ jobs:
         with:
           name: artefato-${{ github.sha }}
           path: .aws-sam/build
-          # Curto de propósito: o artefato só precisa sobreviver do fim deste
-          # job até o job "publicar" do mesmo workflow run, minutos depois.
-          # O histórico do produto vive no DynamoDB, não aqui.
-          retention-days: 1
+          # 14 dias, não 1: o artefato não serve só ao job "publicar" deste
+          # mesmo run — a recuperação (ticket 19; spec, 4.12) precisa
+          # rebaixar para uma publicação saudável anterior "sem reconstruir
+          # dependências", o que só é possível enquanto o artefato daquele
+          # SHA ainda existir. Mesmo prazo da retenção de logs já usada no
+          # projeto (RetencaoDeLogsEmDias, infra/aplicacao.yaml) — o
+          # histórico do produto em si continua vivendo só no DynamoDB.
+          retention-days: 14
           if-no-files-found: error
 
   # Publica exatamente o artefato construído acima, dentro da exclusão mútua
@@ -181,6 +185,8 @@ jobs:
       id-token: write # só este job assume papel AWS (AGENTS.md)
       pull-requests: read
       deployments: write
+      actions: read # baixar o artefato de um SHA anterior (recuperação, ticket 19)
+      issues: write # registrar diagnóstico no GitHub quando não houver versão recuperável (ticket 19)
     env:
       SAM_CLI_TELEMETRY: "0"
       GH_TOKEN: ${{ github.token }}
@@ -297,74 +303,164 @@ jobs:
           VERSAO: ${{ github.sha }}
 
       - name: Verificar saúde, versão, dependências, webhook e agendamento
-        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        # always(): mesmo que "sam deploy" tenha falhado, o CloudFormation
+        # pode ter feito rollback nativo sozinho para uma versão anterior
+        # saudável (exercitado ao vivo no ticket 18, incidente do
+        # ScheduleV2) — este diagnóstico precisa rodar contra o que estiver
+        # ativo agora, não só no caminho feliz (spec, 4.12: "falha de
+        # deploy... verificando também rollback nativo da infraestrutura").
+        if: always() && steps.checar-atualidade.outputs.publicar == 'sim'
         id: diagnostico
+        uses: ./.github/actions/diagnosticar-publicacao
+        with:
+          versao-esperada: ${{ github.sha }}
+
+      # A partir daqui, ticket 19 (spec, 4.12): se o diagnóstico acima
+      # reprovou — deploy falho sem rollback nativo suficiente, ou deploy
+      # bem-sucedido mas diagnóstico ruim —, recupera a publicação saudável
+      # anterior à tentativa em vez de deixar a produção quebrada.
+      - name: Localizar última publicação saudável
+        if: always() && steps.diagnostico.outcome == 'failure'
+        id: localizar-recuperacao
+        env:
+          ID_DA_IMPLANTACAO: ${{ steps.implantacao.outputs.id }}
+        run: |
+          set -euo pipefail
+          # "Dois marcos... consultáveis: a publicação saudável anterior à
+          # tentativa" (checklist do ticket 19) — sem manifesto próprio: a
+          # API de Deployments do ticket 18 já registra exatamente isso.
+          # Percorre as implantações mais recentes primeiro (ordem padrão da
+          # API), pulando a desta própria tentativa, até achar a última com
+          # status "success".
+          shaRecuperacao=""
+          for id in $(gh api "repos/$GH_REPO/deployments?environment=producao&per_page=20" --jq '.[].id'); do
+            if [ "$id" = "$ID_DA_IMPLANTACAO" ]; then
+              continue
+            fi
+            estado="$(gh api "repos/$GH_REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // empty')"
+            if [ "$estado" = "success" ]; then
+              shaRecuperacao="$(gh api "repos/$GH_REPO/deployments/$id" --jq .sha)"
+              break
+            fi
+          done
+          if [ -z "$shaRecuperacao" ]; then
+            echo "Nenhuma publicação 'success' anterior encontrada — sem versão para recuperar (spec, 4.12: 'primeiro deploy sem versão anterior')."
+          else
+            echo "Publicação saudável anterior encontrada: $shaRecuperacao"
+          fi
+          echo "sha=$shaRecuperacao" >> "$GITHUB_OUTPUT"
+
+      - name: Recuperar publicação saudável anterior
+        # always(): sem isso, o GitHub Actions insere um success() implícito
+        # em qualquer `if:` que não use always()/failure()/cancelled()
+        # explicitamente — e como o passo "diagnostico" anterior já falhou
+        # (é exatamente por isso que chegamos aqui), esse success() implícito
+        # bloquearia este passo mesmo com o SHA de recuperação já achado.
+        # Achado ao vivo (ticket 19: teste de fogo real) — o passo ficava
+        # "skipped" mesmo com steps.localizar-recuperacao.outputs.sha
+        # preenchido, e a cadeia caía direto em desabilitar o agendamento.
+        if: always() && steps.localizar-recuperacao.outputs.sha != ''
+        id: recuperar
+        env:
+          SHA_RECUPERACAO: ${{ steps.localizar-recuperacao.outputs.sha }}
         run: |
           set -euo pipefail
 
-          saida="$(aws cloudformation describe-stacks --stack-name "$STACK_APLICACAO" --query 'Stacks[0].{status:StackStatus,outputs:Outputs}' --output json)"
-          status="$(echo "$saida" | jq -r .status)"
-          case "$status" in
-            *_COMPLETE) ;;
-            *) echo "::error::stack frase-diaria-app em estado inesperado: $status"; exit 1 ;;
-          esac
-          urlSaude="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="UrlHealth") | .OutputValue')"
-          versaoNaStack="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="VersaoPublicada") | .OutputValue')"
-          if [ "$versaoNaStack" != "$GITHUB_SHA" ]; then
-            echo "::error::VersaoPublicada da stack ($versaoNaStack) não confere com o SHA publicado ($GITHUB_SHA)"
-            exit 1
+          # "Sem reconstruir dependências" (spec, 4.12): baixa o artefato já
+          # construído de quando $SHA_RECUPERACAO passou pelo job
+          # "construir", de uma execução passada deste mesmo workflow — só
+          # possível enquanto a retenção do artefato (14 dias) não expirou.
+          idArtefato="$(gh api "repos/$GH_REPO/actions/artifacts?name=artefato-$SHA_RECUPERACAO&per_page=1" --jq '.artifacts[0].id // empty')"
+          if [ -z "$idArtefato" ]; then
+            echo "::error::artefato de $SHA_RECUPERACAO não está mais disponível (retenção expirada); recuperação automática impossível."
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          # Saúde + versão ativa: /health é público, não consome frase nem
-          # envia mensagem.
-          respostaSaude="$(curl -sf --retry 5 --retry-delay 3 --retry-connrefused "$urlSaude")"
-          situacao="$(echo "$respostaSaude" | jq -r .situacao)"
-          versaoNoHealth="$(echo "$respostaSaude" | jq -r .versao)"
-          if [ "$situacao" != "ok" ] || [ "$versaoNoHealth" != "$GITHUB_SHA" ]; then
-            echo "::error::diagnóstico de /health reprovou a publicação (situacao=$situacao, versao=$versaoNoHealth)"
-            exit 1
+          rm -rf .aws-sam/build
+          mkdir -p .aws-sam/build
+          gh api "repos/$GH_REPO/actions/artifacts/$idArtefato/zip" > /tmp/artefato-recuperacao.zip
+          unzip -q /tmp/artefato-recuperacao.zip -d .aws-sam/build
+
+          esperado="$(cat .aws-sam/build/CHECKSUM.txt)"
+          obtido="$(find .aws-sam/build -type f ! -name CHECKSUM.txt -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          if [ "$esperado" != "$obtido" ]; then
+            echo "::error::checksum do artefato de recuperação ($SHA_RECUPERACAO) não confere"
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          # Acesso às dependências: as quatro funções da stack precisam estar
-          # ativas e com a última atualização bem-sucedida (a permissão real
-          # de DynamoDB/SSM já foi exercitada pelo próprio `sam deploy`, que
-          # falharia se a policy estivesse errada; aqui só confirmamos que a
-          # função resultante está operável).
-          for funcao in http worker agendador-diario reconciliador; do
-            config="$(aws lambda get-function-configuration --function-name "frase-diaria-$funcao")"
-            estado="$(echo "$config" | jq -r .State)"
-            ultimaAtualizacao="$(echo "$config" | jq -r .LastUpdateStatus)"
-            if [ "$estado" != "Active" ] || [ "$ultimaAtualizacao" != "Successful" ]; then
-              echo "::error::frase-diaria-$funcao não está operável (State=$estado, LastUpdateStatus=$ultimaAtualizacao)"
-              exit 1
-            fi
-          done
+          corpo="$(jq -n --arg ref "$SHA_RECUPERACAO" --arg descricao "recuperação automática após falha em $GITHUB_SHA" \
+            '{ref: $ref, environment: "producao", auto_merge: false, required_contexts: [], description: $descricao}')"
+          idImplantacaoRecuperacao="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
+          gh api --method POST "repos/$GH_REPO/deployments/$idImplantacaoRecuperacao/statuses" \
+            -f state=in_progress -f description="redeploy de recuperação em andamento"
+          echo "id_implantacao=$idImplantacaoRecuperacao" >> "$GITHUB_OUTPUT"
 
-          # Configuração do webhook: a rota existe e exige o segredo antes de
-          # processar qualquer coisa — uma chamada sem o cabeçalho nunca
-          # chega a despachar comando, então não consome frase nem envia
-          # mensagem (dominio/autorizacao valida o segredo antes do chat_id).
-          urlWebhook="${urlSaude%/health}/telegram/webhook"
-          codigoWebhook="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$urlWebhook")"
-          if [ "$codigoWebhook" != "200" ]; then
-            echo "::error::POST sem segredo em /telegram/webhook devolveu $codigoWebhook (esperado 200 — recusa silenciosa por design)"
-            exit 1
+          if VERSAO="$SHA_RECUPERACAO" make publicar-app-artefato; then
+            echo "sucesso=sim" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::sam deploy da recuperação (para $SHA_RECUPERACAO) falhou"
+            gh api --method POST "repos/$GH_REPO/deployments/$idImplantacaoRecuperacao/statuses" \
+              -f state=failure -f description="sam deploy de recuperação falhou"
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          # Configuração de agendamento: os dois ScheduleV2 da stack existem
-          # e terminaram de implantar (via CloudFormation, sem exigir
-          # scheduler:ListSchedules — permissão que o papel de publicação não
-          # tem, e que este ticket optou por não ampliar).
-          agendamentos="$(aws cloudformation list-stack-resources --stack-name "$STACK_APLICACAO" \
-            --query "StackResourceSummaries[?ResourceType=='AWS::Scheduler::Schedule']" --output json)"
-          quantidade="$(echo "$agendamentos" | jq 'length')"
-          incompletos="$(echo "$agendamentos" | jq '[.[] | select(.ResourceStatus | endswith("_COMPLETE") | not)] | length')"
-          if [ "$quantidade" -ne 2 ] || [ "$incompletos" -ne 0 ]; then
-            echo "::error::agendamento inesperado: $quantidade recursos ScheduleV2, $incompletos incompletos (esperado 2 e 0)"
-            exit 1
-          fi
+      - name: Verificar publicação recuperada
+        # always(): mesmo motivo do passo "Recuperar" acima.
+        if: always() && steps.recuperar.outputs.sucesso == 'sim'
+        id: diagnostico-recuperacao
+        uses: ./.github/actions/diagnosticar-publicacao
+        with:
+          versao-esperada: ${{ steps.localizar-recuperacao.outputs.sha }}
 
-          echo "Diagnóstico pós-publicação aprovado."
+      - name: Registrar resultado da recuperação
+        if: always() && steps.recuperar.outputs.id_implantacao != ''
+        env:
+          ID_IMPLANTACAO_RECUPERACAO: ${{ steps.recuperar.outputs.id_implantacao }}
+          DESFECHO_DIAGNOSTICO_RECUPERACAO: ${{ steps.diagnostico-recuperacao.outcome }}
+        run: |
+          set -euo pipefail
+          estado=failure
+          if [ "$DESFECHO_DIAGNOSTICO_RECUPERACAO" = "success" ]; then
+            estado=success
+          fi
+          gh api --method POST "repos/$GH_REPO/deployments/$ID_IMPLANTACAO_RECUPERACAO/statuses" \
+            -f state="$estado" -f description="diagnóstico pós-recuperação: $DESFECHO_DIAGNOSTICO_RECUPERACAO"
+
+      # Nenhuma recuperação foi possível (sem versão anterior) ou a
+      # recuperação também não passou no diagnóstico: "desabilitar novos
+      # envios quando não houver versão operacional verificável" (spec,
+      # 4.12) e registrar o diagnóstico no GitHub para procedimento manual.
+      - name: Desabilitar agendamento diário (sem versão operacional verificável)
+        if: always() && steps.diagnostico.outcome == 'failure' && steps.diagnostico-recuperacao.outcome != 'success'
+        id: desabilitar
+        run: |
+          set -euo pipefail
+          nome="frase-diaria-agendador-diario"
+          aws scheduler get-schedule --name "$nome" \
+            | jq 'del(.CreationDate, .LastModificationDate, .Arn) | .State = "DISABLED"' \
+            > /tmp/agendamento-desabilitado.json
+          aws scheduler update-schedule --name "$nome" --cli-input-json file:///tmp/agendamento-desabilitado.json
+          echo "Agendamento diário desabilitado: nenhuma versão operacional verificável."
+
+      - name: Registrar diagnóstico no GitHub (sem versão operacional verificável)
+        if: always() && steps.diagnostico.outcome == 'failure' && steps.diagnostico-recuperacao.outcome != 'success'
+        env:
+          SHA_TENTATIVA: ${{ github.sha }}
+          SHA_RECUPERACAO_TENTADA: ${{ steps.localizar-recuperacao.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SHA_RECUPERACAO_TENTADA" ]; then
+            motivo="a recuperação automática para $SHA_RECUPERACAO_TENTADA também falhou"
+          else
+            motivo="nenhuma publicação 'success' anterior foi encontrada para recuperar"
+          fi
+          gh issue create --repo "$GH_REPO" \
+            --title "Publicação $SHA_TENTATIVA falhou; sem versão operacional verificável" \
+            --body "O diagnóstico pós-publicação reprovou o SHA $SHA_TENTATIVA e $motivo. O agendamento diário foi desabilitado. Procedimento manual: 'git checkout <sha-válido>' seguido de 'make publicar-app VERSAO=<sha-válido>' publica esse commit específico a partir de um checkout local; reabilitar o agendamento depois é responsabilidade manual (aws scheduler update-schedule ou console). Logs desta tentativa: https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID."
 
       - name: Registrar resultado da publicação
         if: always() && steps.implantacao.outputs.id != ''

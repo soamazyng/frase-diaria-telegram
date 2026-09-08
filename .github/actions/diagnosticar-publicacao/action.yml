@@ -1,0 +1,91 @@
+name: Diagnosticar publicação
+description: >
+  Confere saúde, versão ativa, dependências, webhook e agendamento contra uma
+  versão esperada — sem consumir frase nem enviar mensagem de teste (spec,
+  4.11; ticket 18). Extraído do job "publicar" para ser reutilizado sem
+  duplicação pelo diagnóstico original e pelo diagnóstico pós-recuperação
+  (ticket 19; spec, 4.12) — a mesma checagem, contra SHAs diferentes.
+
+inputs:
+  versao-esperada:
+    description: SHA que deve estar ativo (Outputs.VersaoPublicada e /health.versao)
+    required: true
+  stack:
+    description: Nome da stack CloudFormation da aplicação
+    required: false
+    default: frase-diaria-app
+
+runs:
+  using: composite
+  steps:
+    - name: Verificar saúde, versão, dependências, webhook e agendamento
+      shell: bash
+      env:
+        VERSAO_ESPERADA: ${{ inputs.versao-esperada }}
+        STACK: ${{ inputs.stack }}
+      run: |
+        set -euo pipefail
+
+        saida="$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].{status:StackStatus,outputs:Outputs}' --output json)"
+        status="$(echo "$saida" | jq -r .status)"
+        case "$status" in
+          *_COMPLETE) ;;
+          *) echo "::error::stack $STACK em estado inesperado: $status"; exit 1 ;;
+        esac
+        urlSaude="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="UrlHealth") | .OutputValue')"
+        versaoNaStack="$(echo "$saida" | jq -r '.outputs[] | select(.OutputKey=="VersaoPublicada") | .OutputValue')"
+        if [ "$versaoNaStack" != "$VERSAO_ESPERADA" ]; then
+          echo "::error::VersaoPublicada da stack ($versaoNaStack) não confere com a versão esperada ($VERSAO_ESPERADA)"
+          exit 1
+        fi
+
+        # Saúde + versão ativa: /health é público, não consome frase nem
+        # envia mensagem.
+        respostaSaude="$(curl -sf --retry 5 --retry-delay 3 --retry-connrefused "$urlSaude")"
+        situacao="$(echo "$respostaSaude" | jq -r .situacao)"
+        versaoNoHealth="$(echo "$respostaSaude" | jq -r .versao)"
+        if [ "$situacao" != "ok" ] || [ "$versaoNoHealth" != "$VERSAO_ESPERADA" ]; then
+          echo "::error::diagnóstico de /health reprovou (situacao=$situacao, versao=$versaoNoHealth)"
+          exit 1
+        fi
+
+        # Acesso às dependências: as quatro funções da stack precisam estar
+        # ativas e com a última atualização bem-sucedida (a permissão real
+        # de DynamoDB/SSM já foi exercitada pelo próprio `sam deploy`, que
+        # falharia se a policy estivesse errada; aqui só confirmamos que a
+        # função resultante está operável).
+        for funcao in http worker agendador-diario reconciliador; do
+          config="$(aws lambda get-function-configuration --function-name "frase-diaria-$funcao")"
+          estado="$(echo "$config" | jq -r .State)"
+          ultimaAtualizacao="$(echo "$config" | jq -r .LastUpdateStatus)"
+          if [ "$estado" != "Active" ] || [ "$ultimaAtualizacao" != "Successful" ]; then
+            echo "::error::frase-diaria-$funcao não está operável (State=$estado, LastUpdateStatus=$ultimaAtualizacao)"
+            exit 1
+          fi
+        done
+
+        # Configuração do webhook: a rota existe e exige o segredo antes de
+        # processar qualquer coisa — uma chamada sem o cabeçalho nunca chega
+        # a despachar comando, então não consome frase nem envia mensagem
+        # (dominio/autorizacao valida o segredo antes do chat_id).
+        urlWebhook="${urlSaude%/health}/telegram/webhook"
+        codigoWebhook="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$urlWebhook")"
+        if [ "$codigoWebhook" != "200" ]; then
+          echo "::error::POST sem segredo em /telegram/webhook devolveu $codigoWebhook (esperado 200 — recusa silenciosa por design)"
+          exit 1
+        fi
+
+        # Configuração de agendamento: os dois ScheduleV2 da stack existem e
+        # terminaram de implantar (via CloudFormation, sem exigir
+        # scheduler:ListSchedules — permissão que o papel de publicação não
+        # tem, e que o ticket 18 optou por não ampliar).
+        agendamentos="$(aws cloudformation list-stack-resources --stack-name "$STACK" \
+          --query "StackResourceSummaries[?ResourceType=='AWS::Scheduler::Schedule']" --output json)"
+        quantidade="$(echo "$agendamentos" | jq 'length')"
+        incompletos="$(echo "$agendamentos" | jq '[.[] | select(.ResourceStatus | endswith("_COMPLETE") | not)] | length')"
+        if [ "$quantidade" -ne 2 ] || [ "$incompletos" -ne 0 ]; then
+          echo "::error::agendamento inesperado: $quantidade recursos ScheduleV2, $incompletos incompletos (esperado 2 e 0)"
+          exit 1
+        fi
+
+        echo "Diagnóstico aprovado para $VERSAO_ESPERADA."

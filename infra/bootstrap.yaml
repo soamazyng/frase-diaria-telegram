@@ -114,6 +114,20 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # ATENÇÃO AO EDITAR: este bloco de Statement (TransformSAM até
+              # BucketDeArtefatosGerenciadoPeloSAM) é duplicado, palavra por
+              # palavra, na Policy do PapelDeInfraestrutura logo abaixo — o
+              # reconciliador (ticket 20) precisa das mesmas permissões de
+              # deploy para republicar a stack de aplicação. Idealmente seria
+              # uma única definição referenciada duas vezes (âncora/alias
+              # YAML), mas o CloudFormation recusa esse template com "YAML
+              # aliases are not allowed in CloudFormation templates" —
+              # confirmado ao vivo contra `aws cloudformation validate-template`
+              # (funciona em infra/aplicacao.yaml só porque o SAM CLI resolve
+              # os anchors no lado do cliente antes de enviar; este template
+              # vai direto via `aws cloudformation deploy`, sem essa etapa).
+              # Qualquer mudança aqui precisa ser replicada manualmente lá.
+              #
               # SAM processa o Transform antes de aplicar o changeset; sem
               # isto, todo `sam deploy` seria recusado já na primeira chamada.
               - Sid: TransformSAM
@@ -265,14 +279,25 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}/*"
 
   # Assumido pelo workflow periódico de reconciliação de publicações (ticket
-  # 20, ainda não construído): por enquanto só leitura, porque a lógica de
-  # recuperação em si ainda não existe. Estender esta policy quando o ticket
-  # 20 definir exatamente que ação de recuperação ela precisa executar — não
-  # conceder de antemão o que ainda não tem uso concreto.
+  # 20): as mesmas permissões de deploy do papel de publicação, duplicadas
+  # do bloco acima (CloudFormation não aceita âncora/alias YAML — ver
+  # comentário em PapelDePublicacao). O reconciliador pode precisar
+  # republicar a stack de aplicação de verdade (runner interrompido, PR
+  # fechado sem merge), não só ler o estado dela. Escopo idêntico ao papel
+  # de publicação: só a stack frase-diaria-app, nunca a stack de dados,
+  # nunca um recurso fora do prefixo do projeto.
   PapelDeInfraestrutura:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${Prefixo}-infraestrutura"
+      # Texto da Description deliberadamente inalterado (ainda "inspeciona o
+      # estado da publicação", embora o papel agora também republique):
+      # mudar este campo chama iam:UpdateRoleDescription, ação que a
+      # identidade local que aplica este template (user/aws-developer-group)
+      # não tem — achado ao vivo (AccessDenied real, ver docs/20), que
+      # travou a stack em UPDATE_ROLLBACK_FAILED até ser destravada com
+      # `continue-update-rollback --resources-to-skip`. Nenhuma mudança real
+      # chegou a ser aplicada nessa tentativa; o papel ficou intacto.
       Description: !Sub "CI/CD (${ProprietarioGitHub}/${NomeDoRepositorio}@${BranchDeInfraestrutura}): inspeciona o estado da publicação."
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -288,23 +313,157 @@ Resources:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:ref:refs/heads/${BranchDeInfraestrutura}"
       Policies:
-        - PolicyName: InspecionarPublicacao
+        - PolicyName: PublicarStackDeAplicacao
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: Allow
+              - Sid: TransformSAM
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"
+              - Sid: GerenciarAStackDeAplicacao
+                Effect: Allow
                 Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:TagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Prefixo}-app/*"
+              - Sid: FuncoesLambdaDaAplicacao
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:DeleteFunction
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:ListVersionsByFunction
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-*"
+              - Sid: ApiGatewayHttpExistente
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                  - apigateway:TagResource
+                Resource:
+                  # ARN de API Gateway v2 não carrega o id da conta — o padrão
+                  # /apis* casaria com qualquer API HTTP da conta/região, não
+                  # só a deste projeto (achado do security-review). A condição
+                  # de tag reduz o alcance a recursos que o próprio
+                  # CloudFormation já marca com o nome desta stack; sem ela,
+                  # este seria um curinga sem redução de escopo (AGENTS.md
+                  # exige condição para todo curinga).
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/aws:cloudformation:stack-name: !Sub "${Prefixo}-app"
+              - Sid: ApiGatewayHttpCriacaoDeSubRecursos
+                Effect: Allow
+                Action:
+                  - apigateway:POST
+                Resource:
+                  # A API HTTP já existe (publicada no ticket 03); todo POST
+                  # esperado daqui em diante cria sub-recursos (rota,
+                  # integração, estágio) sob ela, não uma API nova — mas o
+                  # suporte de AWS::ResourceTag do API Gateway a essa operação
+                  # específica não foi verificado ao vivo. Residual aceito
+                  # deliberadamente, não escondido: ticket 18 deve confirmar
+                  # contra o pipeline real e apertar esta condição se o
+                  # serviço suportar.
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*"
+              - Sid: LogsDaAplicacao
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                  - logs:TagResource
+                  - logs:ListTagsForResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${Prefixo}-*"
+              - Sid: AgendamentosDaAplicacao
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:GetSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:TagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${Prefixo}-*"
+              - Sid: PapeisDeExecucaoDaAplicacao
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:PassRole
+                Resource:
+                  # Só os papéis de execução que o SAM cria/gerencia DENTRO da
+                  # stack de aplicação — nunca o papel de publicação nem o de
+                  # infraestrutura, e nunca um papel fora deste prefixo
+                  # (PassRole aberto + deploy de Lambda seria escalonamento de
+                  # privilégio; verificado na skill aws-iam).
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Prefixo}-app-*"
+              - Sid: StackDoBucketGerenciadoPeloSAM
+                Effect: Allow
+                Action:
+                  # `sam deploy --resolve-s3` verifica/usa esta stack a cada
+                  # publicação, mesmo sem alteração real nela — por isso
+                  # precisa do fluxo de changeset, não só de leitura. Nunca
+                  # CreateStack/UpdateStack: a stack já existe (ticket 03) e
+                  # este papel não deve poder recriá-la nem alterá-la, só
+                  # confirmar seu estado atual.
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
                   - cloudformation:DescribeStacks
                   - cloudformation:DescribeStackEvents
                   - cloudformation:GetTemplate
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Prefixo}-app/*"
-              - Effect: Allow
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${StackGerenciadaPeloSAM}/*"
+              - Sid: BucketDeArtefatosGerenciadoPeloSAM
+                Effect: Allow
                 Action:
-                  - lambda:GetFunction
-                  - lambda:GetFunctionConfiguration
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}/*"
 
 Outputs:
   ProvedorOIDCArn:

@@ -1,0 +1,254 @@
+name: Reconciliador de publicações
+
+# Roda de hora em hora (decisão da usuária, ticket 20 — 5 em 5 minutos
+# custaria ~US$53/mês em minutos excedentes do plano Free; de hora em hora
+# cabe nos 2.000 min/mês). GitHub só dispara `schedule` a partir do branch
+# padrão (main) — por isso o papel assumido aqui (frase-diaria-infraestrutura)
+# tem a trust policy escopada a `ref:refs/heads/main`, não `develop`.
+#
+# Cobre o que o job "publicar" (tickets 18/19) não cobre porque ninguém
+# está lá para reagir: o runner morreu no meio de uma publicação (a
+# implantação fica "em andamento" para sempre), ou o PR develop -> main foi
+# fechado sem merge e a recuperação síncrona do ticket 19 nunca rodou (ela
+# só dispara dentro do próprio job de publicação, não por um evento de
+# fechamento de PR — ver docs/19, "Próximo passo").
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {} # permite disparo manual, útil para testar
+
+permissions: {}
+
+jobs:
+  reconciliar:
+    name: Reconciliar publicação
+    runs-on: ubuntu-latest
+    concurrency:
+      # A MESMA exclusão mútua do job "publicar" (checklist do ticket 20:
+      # "adquire a mesma exclusão mútua de produção antes de agir"). Grupo
+      # global por nome — concurrency não é isolado por arquivo de workflow.
+      group: producao-frase-diaria
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # só este job assume papel AWS (AGENTS.md)
+      pull-requests: read
+      deployments: write
+      actions: read
+      issues: write
+    env:
+      SAM_CLI_TELEMETRY: "0"
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      STACK_APLICACAO: frase-diaria-app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # DEBUG TEMPORÁRIO (ticket 20) — remover no próximo commit. O
+      # AGENTS.md proíbe presumir o claim `sub` do OIDC; já fomos
+      # surpreendidos duas vezes nesta sessão (formato imutável no ticket
+      # 18, formato "pull_request" ao investigar o ticket 19). A trust
+      # policy do papel de infraestrutura assume "ref:refs/heads/main" para
+      # `schedule`/`workflow_dispatch` (mesma suposição do ticket 16, nunca
+      # verificada contra um token real) — conferir antes de depender disso
+      # numa execução horária de verdade.
+      - name: "[debug] Ler claim sub do token OIDC real"
+        run: |
+          set -euo pipefail
+          resposta="$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")"
+          payload="$(echo "$resposta" | jq -r .value | cut -d'.' -f2)"
+          payload="$(echo "$payload" | tr '_-' '/+')"
+          case $((${#payload} % 4)) in
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+          esac
+          echo "$payload" | base64 -d | jq '{sub, aud, ref}'
+
+      - name: Configurar credenciais AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          # Mesmo ARN de conta, papel diferente do de publicação — trust
+          # policy escopada a ref:refs/heads/main (infra/bootstrap.yaml).
+          role-to-assume: arn:aws:iam::712790115760:role/frase-diaria-infraestrutura
+          aws-region: us-east-1
+          role-session-name: github-${{ github.run_id }}
+
+      - name: Reconciliar implantações travadas "em andamento"
+        # "Uma publicação registrada como 'em andamento' há tempo demais é
+        # reconciliada em vez de ficar travando o grupo indefinidamente"
+        # (checklist do ticket 20). O grupo de concorrência em si já não
+        # fica "travado" por uma implantação antiga (o job "publicar"
+        # sempre finaliza o próprio grupo do Actions, mesmo se falhar) — o
+        # problema real é a API de Deployments do GitHub, que ficaria com
+        # um registro "in_progress" eterno se o runner morresse no meio,
+        # confundindo qualquer busca futura por "última publicação
+        # saudável" (ticket 19). Este passo marca esses registros como
+        # `error`, sem tentar adivinhar se a publicação real terminou bem.
+        id: reconciliar-travadas
+        run: |
+          set -euo pipefail
+          limiteMinutos=20
+          agora=$(date -u +%s)
+          reconciliadas=0
+          for id in $(gh api "repos/$GH_REPO/deployments?environment=producao&per_page=10" --jq '.[].id'); do
+            ultimoStatus="$(gh api "repos/$GH_REPO/deployments/$id/statuses?per_page=1" --jq '.[0] // empty')"
+            estado="$(echo "$ultimoStatus" | jq -r '.state // empty')"
+            if [ "$estado" != "in_progress" ]; then
+              continue
+            fi
+            criadoEm="$(echo "$ultimoStatus" | jq -r '.created_at')"
+            criadoEpoch="$(date -u -d "$criadoEm" +%s)"
+            idadeMinutos=$(( (agora - criadoEpoch) / 60 ))
+            if [ "$idadeMinutos" -gt "$limiteMinutos" ]; then
+              echo "Implantação $id em andamento há ${idadeMinutos}min (> ${limiteMinutos}min) — reconciliando."
+              gh api --method POST "repos/$GH_REPO/deployments/$id/statuses" \
+                -f state=error -f description="reconciliada: em andamento há mais de ${limiteMinutos}min, runner provavelmente interrompido"
+              reconciliadas=$((reconciliadas + 1))
+            fi
+          done
+          echo "quantidade=$reconciliadas" >> "$GITHUB_OUTPUT"
+
+      - name: Avaliar se a versão ativa precisa reconciliar para a estável
+        id: avaliar
+        # "Fechamento de PR sem merge... restaura a versão estável anterior
+        # ao PR" (AC25, adiado do ticket 19 — ver docs/19). Sem PR aberto
+        # develop -> main, a versão publicada deveria ser exatamente o HEAD
+        # de main; qualquer diferença é candidata abandonada (PR fechado
+        # sem merge) ou publicação nunca sincronizada. Com PR aberto, a
+        # stack rodando o conteúdo da candidata é o comportamento normal
+        # (spec, 4.11) — não é papel do reconciliador brigar com uma
+        # publicação em andamento pelo próprio job "publicar".
+        run: |
+          set -euo pipefail
+          abertos="$(gh pr list --base main --head develop --state open --json number --jq 'length')"
+          if [ "$abertos" -gt 0 ]; then
+            echo "PR develop -> main aberto; publicação de candidata é esperada, nada a reconciliar."
+            echo "reconciliar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          shaEstavel="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)"
+          versaoAtiva="$(aws cloudformation describe-stacks --stack-name "$STACK_APLICACAO" --output json 2>/dev/null \
+            | jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="VersaoPublicada") | .OutputValue' || echo "")"
+
+          if [ -z "$versaoAtiva" ]; then
+            echo "Não foi possível ler a versão ativa (stack ausente ou sem Output) — nada a reconciliar automaticamente."
+            echo "reconciliar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$versaoAtiva" = "$shaEstavel" ]; then
+            echo "Versão ativa ($versaoAtiva) já é a estável; nada a fazer (idempotente)."
+            echo "reconciliar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Versão ativa ($versaoAtiva) diverge da estável ($shaEstavel) sem PR aberto — reconciliando."
+          echo "reconciliar=sim" >> "$GITHUB_OUTPUT"
+          echo "sha-estavel=$shaEstavel" >> "$GITHUB_OUTPUT"
+
+      - name: Reconciliar para a versão estável
+        if: steps.avaliar.outputs.reconciliar == 'sim'
+        id: reconciliar
+        env:
+          SHA_ESTAVEL: ${{ steps.avaliar.outputs.sha-estavel }}
+        run: |
+          set -euo pipefail
+
+          # Mesma técnica do passo "Recuperar publicação saudável anterior"
+          # (ticket 19, .github/workflows/pr-develop-main.yml) — duplicada
+          # aqui, não extraída para uma composite action compartilhada:
+          # aquele pipeline já está exercitado ao vivo várias vezes nesta
+          # sessão, e refatorá-lo para compartilhar código arriscaria
+          # reintroduzir uma regressão sem tempo de testar de novo com o
+          # mesmo rigor. Trade-off deliberado (documentado em docs/20),
+          # análogo à duplicação das policies IAM em infra/bootstrap.yaml.
+          idArtefato="$(gh api "repos/$GH_REPO/actions/artifacts?name=artefato-$SHA_ESTAVEL&per_page=1" --jq '.artifacts[0].id // empty')"
+          if [ -z "$idArtefato" ]; then
+            echo "::error::artefato de $SHA_ESTAVEL não está mais disponível (retenção expirada); reconciliação automática impossível."
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          rm -rf .aws-sam/build
+          mkdir -p .aws-sam/build
+          gh api "repos/$GH_REPO/actions/artifacts/$idArtefato/zip" > /tmp/artefato-reconciliacao.zip
+          unzip -q /tmp/artefato-reconciliacao.zip -d .aws-sam/build
+
+          esperado="$(cat .aws-sam/build/CHECKSUM.txt)"
+          obtido="$(find .aws-sam/build -type f ! -name CHECKSUM.txt -print0 \
+            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          if [ "$esperado" != "$obtido" ]; then
+            echo "::error::checksum do artefato de reconciliação ($SHA_ESTAVEL) não confere"
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          corpo="$(jq -n --arg ref "$SHA_ESTAVEL" --arg descricao "reconciliação periódica: PR fechado sem merge ou publicação nunca sincronizada" \
+            '{ref: $ref, environment: "producao", auto_merge: false, required_contexts: [], description: $descricao}')"
+          idImplantacao="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
+          gh api --method POST "repos/$GH_REPO/deployments/$idImplantacao/statuses" \
+            -f state=in_progress -f description="redeploy de reconciliação em andamento"
+          echo "id-implantacao=$idImplantacao" >> "$GITHUB_OUTPUT"
+
+          if VERSAO="$SHA_ESTAVEL" make publicar-app-artefato; then
+            echo "sucesso=sim" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::sam deploy da reconciliação (para $SHA_ESTAVEL) falhou"
+            gh api --method POST "repos/$GH_REPO/deployments/$idImplantacao/statuses" \
+              -f state=failure -f description="sam deploy de reconciliação falhou"
+            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Verificar publicação reconciliada
+        if: always() && steps.reconciliar.outputs.sucesso == 'sim'
+        id: diagnostico
+        uses: ./.github/actions/diagnosticar-publicacao
+        with:
+          versao-esperada: ${{ steps.avaliar.outputs.sha-estavel }}
+
+      - name: Registrar resultado da reconciliação
+        if: always() && steps.reconciliar.outputs.id-implantacao != ''
+        env:
+          ID_IMPLANTACAO: ${{ steps.reconciliar.outputs.id-implantacao }}
+          DESFECHO_DIAGNOSTICO: ${{ steps.diagnostico.outcome }}
+        run: |
+          set -euo pipefail
+          estado=failure
+          if [ "$DESFECHO_DIAGNOSTICO" = "success" ]; then
+            estado=success
+          fi
+          gh api --method POST "repos/$GH_REPO/deployments/$ID_IMPLANTACAO/statuses" \
+            -f state="$estado" -f description="diagnóstico pós-reconciliação: $DESFECHO_DIAGNOSTICO"
+
+      # Reconciliação não foi possível (sem artefato) ou falhou no
+      # diagnóstico: mesmo padrão do ticket 19 — desabilita o agendamento
+      # diário e registra o diagnóstico no GitHub para procedimento manual.
+      - name: Desabilitar agendamento diário (reconciliação malsucedida)
+        if: always() && steps.avaliar.outputs.reconciliar == 'sim' && steps.diagnostico.outcome != 'success'
+        run: |
+          set -euo pipefail
+          nome="frase-diaria-agendador-diario"
+          aws scheduler get-schedule --name "$nome" \
+            | jq 'del(.CreationDate, .LastModificationDate, .Arn) | .State = "DISABLED"' \
+            > /tmp/agendamento-desabilitado.json
+          aws scheduler update-schedule --name "$nome" --cli-input-json file:///tmp/agendamento-desabilitado.json
+          echo "Agendamento diário desabilitado: reconciliação para a versão estável não teve sucesso."
+
+      - name: Registrar diagnóstico no GitHub (reconciliação malsucedida)
+        if: always() && steps.avaliar.outputs.reconciliar == 'sim' && steps.diagnostico.outcome != 'success'
+        env:
+          SHA_ESTAVEL: ${{ steps.avaliar.outputs.sha-estavel }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "$GH_REPO" \
+            --title "Reconciliador não conseguiu restaurar a versão estável ($SHA_ESTAVEL)" \
+            --body "O reconciliador periódico detectou que a produção não está na versão estável ($SHA_ESTAVEL, HEAD de main) sem PR develop -> main aberto, e a reconciliação automática não teve sucesso. O agendamento diário foi desabilitado. Procedimento manual: 'git checkout $SHA_ESTAVEL' seguido de 'make publicar-app VERSAO=$SHA_ESTAVEL' a partir de um checkout local. Logs desta execução: https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID."
