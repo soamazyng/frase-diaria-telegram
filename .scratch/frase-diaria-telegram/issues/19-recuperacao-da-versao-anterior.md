@@ -9,10 +9,12 @@
 falha de diagnóstico (recuperação síncrona, no mesmo job `publicar`). Fora
 do escopo desta entrega: recuperação de PR fechado sem merge (AC25) — exige
 decisão de segurança própria sobre a trust policy OIDC para eventos
-`pull_request`, documentada como próximo passo. Nenhum dos dois caminhos
-implementados foi exercitado contra a AWS/GitHub reais ainda (exigiria
-provocar uma falha de propósito em produção); só validado estruturalmente
-(lint, sintaxe, hardening).
+`pull_request`, documentada como próximo passo. O caminho feliz (diagnóstico
+aprova, recuperação fica inerte) foi publicado e confirmado ao vivo contra
+GitHub/AWS reais (`gh run` `34285100609`), inclusive achando e corrigindo
+uma divergência real entre `develop` e `main`. Os dois caminhos de
+recuperação em si (falha de deploy, falha de diagnóstico) ainda não foram
+exercitados — exigiria provocar uma falha de propósito em produção.
 
 - [x] Artefatos imutáveis, configuração e manifesto suficientes para restaurar uma publicação sem reconstruir dependências ficam preservados. *(retenção do artefato: 1 → 14 dias)*
 - [x] Dois marcos são mantidos e consultáveis: a publicação saudável anterior à tentativa e a versão estável aceita em `main`. *(API de Deployments do ticket 18 + HEAD de `main`; sem manifesto novo)*

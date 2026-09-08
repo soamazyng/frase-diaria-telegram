@@ -120,16 +120,43 @@ gap novo foi encontrado ao desenhar esta parte.
   de duplicar o diagnóstico) e **C1-C4** (comentários justificam decisões —
   por que a API de Deployments substitui um manifesto, por que o AC25 fica
   de fora).
-- **Não exercitado ao vivo nesta sessão:** nenhum dos dois caminhos de
-  recuperação (falha de deploy, falha de diagnóstico) foi realmente
-  disparado contra a AWS/GitHub reais — exigiria provocar uma falha de
-  propósito num push real, um efeito observável em produção que não foi
-  pedido nesta tarefa. A lógica foi revisada e validada estruturalmente,
-  seguindo o mesmo padrão que funcionou nos tickets 16-18, mas — como o
-  próprio `rules.md` do projeto lembra — "um guarda que nunca falhou não
-  guarda nada". Recomendo um teste real controlado (quebrar o diagnóstico de
-  propósito num push, observar a recuperação agir, restaurar) antes de
-  considerar o AC24 comprovado, não só implementado.
+- **Caminho feliz exercitado de verdade, ao vivo:** o primeiro push real
+  com estas mudanças (`gh run` `34285100609`) publicou de ponta a ponta —
+  `sam deploy` real, diagnóstico aprovado pela composite action nova, e os
+  seis passos novos de recuperação (`Localizar última publicação
+  saudável`, `Recuperar`, `Verificar publicação recuperada`, `Registrar
+  resultado da recuperação`, `Desabilitar agendamento`, `Registrar
+  diagnóstico no GitHub`) todos `skipped`, exatamente o esperado quando o
+  diagnóstico original passa. Isso comprova, contra o sistema real: a
+  extração da composite action não quebrou o diagnóstico original, as
+  novas `permissions:` (`actions: read`, `issues: write`) não impediram o
+  job de completar, e as condições `if:` dos passos de recuperação
+  corretamente não disparam fora do gatilho esperado.
+- **Achado real no meio do caminho, não um bug do ticket 19:** a primeira
+  tentativa desse mesmo push falhou na checagem "develop precisa incluir a
+  base de main" (do ticket 18, inalterada aqui) com `status: diverged`. O
+  PR #1 (develop → main) tinha sido mesclado por commit de merge enquanto
+  o ticket 19 estava em desenvolvimento, e `develop` local nunca
+  sincronizou de volta esse commit — um cenário genuinamente novo, nunca
+  visto nas publicações do ticket 18. A checagem bloqueou corretamente
+  (nenhuma mutação na stack aconteceu) e todos os passos de recuperação do
+  ticket 19 ficaram inertes, como desenhado — a falha não era "diagnóstico
+  reprovou", era "não deveria nem tentar publicar". Corrigido com
+  `git merge origin/main` em `develop` (confirmado sem diferença de
+  conteúdo: `git diff <merge-commit> <develop-anterior> --stat` vazio, só
+  reconvergência de histórico) e reenviado — a segunda tentativa é o
+  sucesso relatado acima. Isso valida essa checagem do ticket 18 contra um
+  cenário real de merge pela primeira vez, e expõe uma lacuna operacional:
+  nada no pipeline sincroniza `develop` de volta automaticamente depois de
+  um merge — fica para o ticket 21 (proteção de `main`) considerar se isso
+  merece automação.
+- **Ainda não exercitado ao vivo:** os dois caminhos de recuperação em si
+  (falha de deploy, falha de diagnóstico) — o push real desta sessão
+  seguiu o caminho feliz. Provar que a recuperação de fato republica e
+  verifica exigiria uma falha provocada de propósito, um efeito observável
+  em produção que segue não pedido nesta tarefa. Recomendo esse teste
+  controlado antes de considerar o AC24 comprovado, não só implementado e
+  estruturalmente exercitado.
 
 ## Review
 
