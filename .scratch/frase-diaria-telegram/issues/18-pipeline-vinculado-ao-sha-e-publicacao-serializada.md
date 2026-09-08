@@ -4,7 +4,11 @@
 
 **Blocked by:** 03 — Publicação manual em SAM: /health vivo na AWS; 17 — PR automático develop → main.
 
-**Status:** ready-for-agent
+**Status:** implementado em 2026-09-08, verificação local completa — ver
+`docs/18-pipeline-vinculado-ao-sha-e-publicacao-serializada.md`. Falta a
+publicação real (primeiro push autorizado para `develop` executando o job
+`publicar` contra GitHub/AWS de verdade); só fecha como concluído depois
+disso.
 
 - [ ] O SHA imutável do push é capturado e o PR correspondente é localizado.
 - [ ] Testes, análise estática e validação SAM rodam contra esse SHA; qualquer falha impede a publicação e deixa o merge bloqueado (AC20).
