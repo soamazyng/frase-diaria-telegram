@@ -185,8 +185,55 @@ downloaded artifact`, idênticos). A divergência era só entre o que o script
 do projeto contava antes e depois do upload, nunca entre o que foi enviado e
 o que chegou.
 
-Corrigido, commitado (`git commit` separado) e reenviado para `develop`; a
-segunda execução real está descrita no restante deste documento.
+Corrigido, commitado (`git commit` separado) e reenviado para `develop`.
+
+**Segunda execução real:** `garantir-pr`, `verificar` e `construir`
+passaram; `publicar` falhou de novo, agora em "Configurar credenciais AWS
+(OIDC)": `Not authorized to perform sts:AssumeRoleWithWebIdentity`, depois
+de 12 tentativas com backoff. A stack `frase-diaria-app` **não foi tocada**
+— o erro acontece antes de qualquer chamada `sam deploy`.
+
+**Causa raiz, confirmada contra um token real, não contra documentação
+parafraseada.** A pesquisa de segurança do projeto já registrava a
+nuance ("repositórios criados depois de 2026-07-15 usam, por padrão, `sub`
+imutável com IDs") e mandava "confirmar o formato real da claim e nunca
+inventá-lo" — mas ninguém tinha exercitado isso contra um `AssumeRoleWithWebIdentity`
+de verdade até agora, porque nenhum workflow com `id-token: write` existia
+antes do ticket 18. Este repositório foi criado em 2026-09-06 (depois do
+corte). Em vez de confiar numa paráfrase de doc para mudar uma trust
+policy IAM, adicionei um passo de debug temporário ao job `publicar` que
+busca o próprio token OIDC da execução (via `ACTIONS_ID_TOKEN_REQUEST_URL`/
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, já disponíveis com `id-token: write`) e
+imprime só os claims decodificados — nunca o token inteiro. O `sub` real
+emitido:
+
+```
+repo:soamazyng@443219/frase-diaria-telegram@1359588301:ref:refs/heads/develop
+```
+
+— o formato imutável baseado em IDs, exatamente como a pesquisa alertava,
+divergindo do formato `repo:soamazyng/frase-diaria-telegram:ref:refs/heads/develop`
+que a trust policy do ticket 16 assumia. `aud` continuava `sts.amazonaws.com`,
+sem mudança.
+
+**Correção em `infra/bootstrap.yaml`:** o parâmetro único `RepositorioGitHub`
+("owner/repo") virou quatro parâmetros — `ProprietarioGitHub`,
+`IdDoProprietarioGitHub`, `NomeDoRepositorio`, `IdDoRepositorio` — e a
+condição `sub` das duas roles (`PapelDePublicacao`, `PapelDeInfraestrutura`)
+passou a interpolar `${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}`.
+Revisado por change set antes de aplicar: `Modify`/`Replacement: False` nas
+duas roles, nada mais na stack afetado (confirmado, não presumido). Aplicado
+na AWS real (`aws cloudformation execute-change-set`), `UPDATE_COMPLETE`, e
+a trust policy publicada conferida de volta contra o `sub` real capturado
+acima — batem. O passo de debug foi removido do workflow depois de cumprir
+seu propósito (não fica no pipeline definitivo).
+
+**Por que isso não é scope creep do ticket 18, apesar de tocar um arquivo do
+ticket 16:** sem essa correção, o mecanismo central do ticket 18 —
+publicação via OIDC — não funciona em nenhuma circunstância; não é uma
+melhoria opcional, é um defeito bloqueante descoberto ao exercitar o
+pipeline de verdade pela primeira vez, da mesma natureza do bug do `.lock`
+acima.
 
 ## Verificação
 

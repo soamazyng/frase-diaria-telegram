@@ -11,10 +11,31 @@ Parameters:
     Type: String
     Default: frase-diaria
     Description: Prefixo dos nomes dos recursos; casa com as stacks de dados e aplicação.
-  RepositorioGitHub:
+  ProprietarioGitHub:
     Type: String
-    Default: soamazyng/frase-diaria-telegram
-    Description: "owner/repo exato do GitHub — usado para restringir a confiança OIDC."
+    Default: soamazyng
+    Description: "Dono (usuário/organização) do repositório no GitHub."
+  IdDoProprietarioGitHub:
+    Type: String
+    Default: "443219"
+    Description: >
+      ID numérico imutável do dono no GitHub (`gh api users/<dono> --jq .id`).
+      Repositórios criados depois de 2026-07-15 emitem o claim `sub` do OIDC
+      no formato imutável "repo:DONO@ID-DONO/REPO@ID-REPO:ref:...", não mais
+      "repo:DONO/REPO:ref:...". Confirmado contra um token OIDC real emitido
+      pelo GitHub nesta primeira execução do pipeline (ticket 18) — a
+      primeira tentativa, com o formato antigo, falhou com "Not authorized
+      to perform sts:AssumeRoleWithWebIdentity" contra a AWS real.
+  NomeDoRepositorio:
+    Type: String
+    Default: frase-diaria-telegram
+    Description: "Nome do repositório no GitHub, sem o dono."
+  IdDoRepositorio:
+    Type: String
+    Default: "1359588301"
+    Description: >
+      ID numérico imutável do repositório (`gh api repos/<dono>/<repo> --jq .id`).
+      Mesma nuance de IdDoProprietarioGitHub.
   BranchDePublicacao:
     Type: String
     Default: develop
@@ -53,7 +74,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${Prefixo}-publicacao"
-      Description: !Sub "CI/CD (${RepositorioGitHub}@${BranchDePublicacao}): publica a stack de aplicação."
+      Description: !Sub "CI/CD (${ProprietarioGitHub}/${NomeDoRepositorio}@${BranchDePublicacao}): publica a stack de aplicação."
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -66,10 +87,11 @@ Resources:
               # `aud` sempre `sts.amazonaws.com`; `sub` é o valor exato (não
               # precisa de StringLike/wildcard) — restringe a exatamente este
               # repositório E esta branch (AC28: proprietário, repositório e
-              # contexto de execução).
+              # contexto de execução). Formato imutável baseado em IDs (não
+              # "repo:DONO/REPO:ref:..."): ver IdDoProprietarioGitHub acima.
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${RepositorioGitHub}:ref:refs/heads/${BranchDePublicacao}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:ref:refs/heads/${BranchDePublicacao}"
       Policies:
         - PolicyName: PublicarStackDeAplicacao
           PolicyDocument:
@@ -206,7 +228,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${Prefixo}-infraestrutura"
-      Description: !Sub "CI/CD (${RepositorioGitHub}@${BranchDeInfraestrutura}): inspeciona o estado da publicação."
+      Description: !Sub "CI/CD (${ProprietarioGitHub}/${NomeDoRepositorio}@${BranchDeInfraestrutura}): inspeciona o estado da publicação."
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -216,9 +238,10 @@ Resources:
               Federated: !Ref ProvedorOIDCDoGitHub
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
+              # Mesmo formato imutável do papel de publicação, acima.
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${RepositorioGitHub}:ref:refs/heads/${BranchDeInfraestrutura}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:ref:refs/heads/${BranchDeInfraestrutura}"
       Policies:
         - PolicyName: InspecionarPublicacao
           PolicyDocument:
