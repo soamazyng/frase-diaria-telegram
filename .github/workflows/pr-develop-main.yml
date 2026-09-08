@@ -8,10 +8,13 @@ on:
     branches:
       - develop
 
-# Negado por padrão: nenhum passo lê conteúdo do repositório (sem checkout).
-# A única elevação necessária é pull-requests: write, só no job que
-# cria/consulta o PR.
-permissions: {}
+# contents: read é o piso: mesmo sem checkout, `gh pr list`/`gh pr create`
+# resolvem metadados do repositório (a branch padrão) via GraphQL, e sem esta
+# permissão a chamada falha com "Resource not accessible by integration"
+# (exercitado ao vivo — permissions: {} não bastava). pull-requests: write é
+# a única elevação além disso, e só no job que cria/consulta o PR.
+permissions:
+  contents: read
 
 concurrency:
   # Sem cancel-in-progress: dois pushes próximos enfileiram em vez de correr

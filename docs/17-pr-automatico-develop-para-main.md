@@ -26,9 +26,17 @@ api`, nada para mudar): `develop` sobrevive a qualquer merge.
 **Sem `actions/checkout`, sem nenhum `uses:` de terceiro.** O job só chama
 `gh pr list`/`gh pr create` com `--base`/`--head` explícitos — `gh` já vem no
 runner hospedado, e comparar branches remotamente dispensa qualquer conteúdo
-do repositório no disco. Resultado: `permissions: {}` no topo do workflow
-(nem `contents: read` — nenhum passo lê arquivo algum) e nenhuma ação de
-terceiro para fixar por SHA, porque não existe nenhuma.
+do repositório no disco. Nenhuma ação de terceiro para fixar por SHA, porque
+não existe nenhuma.
+
+`permissions: contents: read` no topo, não `{}`. A primeira versão tentou
+`{}` (nenhum passo lê arquivo algum, então parecia certo) e foi publicada —
+essa primeira execução real falhou com `GraphQL: Resource not accessible by
+integration (repository.defaultBranchRef)`: mesmo sem checkout, `gh pr
+list`/`gh pr create` resolvem metadados do repositório via GraphQL, e isso
+exige `contents: read`. Achado só ao exercitar contra o GitHub de verdade,
+não por leitura do YAML; corrigido num segundo commit, sem reescrever o
+primeiro (ver Verificação).
 
 **Nenhum dado de PR/issue/branch/commit de terceiro entra no `run:`.** Título
 e corpo do PR são strings literais que eu escrevi; os únicos `${{ }}` usados
@@ -53,18 +61,21 @@ de verdade.
 
 ## Verificação
 
-- Sintaxe YAML validada localmente (`yaml.safe_load`).
+- Sintaxe YAML validada localmente (`yaml.safe_load`) nas duas versões.
 - Revisão contra a skill `github-actions-hardening`: gatilho seguro (`push`,
   nunca privilegiado), zero sinks de injeção (`${{ }}` só em valores não
   controláveis por terceiros), zero `uses:` (sem superfície de cadeia de
-  suprimentos a fixar), `permissions: {}` no topo com elevação mínima só no
-  job, nenhum segredo tocado.
-- **Exercício real, não simulado**: o próprio push deste commit para
-  `develop` (que já tinha diferenças acumuladas de 16 tickets em relação a
-  `main`) foi o primeiro disparo real do workflow. Resultado registrado
-  abaixo, com o PR de fato criado — é a evidência de que "havendo
-  diferenças... um PR é criado" (AC19) funciona contra o GitHub real, não só
-  contra a leitura do YAML.
+  suprimentos a fixar), elevação mínima (`contents: read` no topo,
+  `pull-requests: write` só no job), nenhum segredo tocado.
+- **Exercício real, não simulado, incluindo uma falha real corrigida:**
+  - 1ª execução (`permissions: {}`, commit `3b7fb17`): falhou —
+    `GraphQL: Resource not accessible by integration
+    (repository.defaultBranchRef)`, log obtido via
+    `gh api repos/.../actions/jobs/<id>/logs`.
+  - Corrigido para `contents: read` neste commit; resultado da execução
+    seguinte (criação do PR contra as diferenças reais acumuladas de 17
+    tickets, e o comportamento de push seguinte com o PR já aberto)
+    confirmado logo abaixo, com o número real do PR.
 
 ## Review
 
