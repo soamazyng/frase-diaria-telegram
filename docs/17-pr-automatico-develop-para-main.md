@@ -29,14 +29,28 @@ runner hospedado, e comparar branches remotamente dispensa qualquer conteúdo
 do repositório no disco. Nenhuma ação de terceiro para fixar por SHA, porque
 não existe nenhuma.
 
-`permissions: contents: read` no topo, não `{}`. A primeira versão tentou
-`{}` (nenhum passo lê arquivo algum, então parecia certo) e foi publicada —
-essa primeira execução real falhou com `GraphQL: Resource not accessible by
-integration (repository.defaultBranchRef)`: mesmo sem checkout, `gh pr
-list`/`gh pr create` resolvem metadados do repositório via GraphQL, e isso
-exige `contents: read`. Achado só ao exercitar contra o GitHub de verdade,
-não por leitura do YAML; corrigido num segundo commit, sem reescrever o
-primeiro (ver Verificação).
+**`contents: read` precisa estar no bloco de `permissions` do *job*, não só
+no topo — duas rodadas de execução real até acertar.** `gh pr list`/`gh pr
+create` resolvem metadados do repositório (a branch padrão) via GraphQL
+mesmo sem checkout, e isso exige `contents: read`; sem ela, a chamada falha
+com `GraphQL: Resource not accessible by integration
+(repository.defaultBranchRef)`.
+
+1. 1ª tentativa: `permissions: {}` no topo — falhou (achado óbvio em
+   retrospecto: nenhuma permissão de conteúdo em lugar nenhum).
+2. 2ª tentativa: `permissions: contents: read` no topo, mantendo
+   `pull-requests: write` só no bloco `permissions` do job — falhou do mesmo
+   jeito. O motivo não é óbvio pela leitura do YAML: um bloco `permissions:`
+   declarado no *job* **substitui** o do topo para aquele job, em vez de
+   somar. Um job que só declara `pull-requests: write` zera `contents` para
+   `none`, mesmo com `contents: read` explícito um nível acima.
+3. Correção: topo volta a `permissions: {}` (documentando que a elevação
+   real mora só no job), e o job passa a declarar as duas permissões juntas
+   — `contents: read` e `pull-requests: write`.
+
+Nenhuma das duas primeiras falhas seria pega por revisão de YAML nem pela
+skill de hardening isoladamente: só apareceram ao rodar contra o GitHub
+real (ver Verificação).
 
 **Nenhum dado de PR/issue/branch/commit de terceiro entra no `run:`.** Título
 e corpo do PR são strings literais que eu escrevi; os únicos `${{ }}` usados
@@ -61,21 +75,28 @@ de verdade.
 
 ## Verificação
 
-- Sintaxe YAML validada localmente (`yaml.safe_load`) nas duas versões.
+- Sintaxe YAML validada localmente (`yaml.safe_load`) nas três versões.
 - Revisão contra a skill `github-actions-hardening`: gatilho seguro (`push`,
   nunca privilegiado), zero sinks de injeção (`${{ }}` só em valores não
   controláveis por terceiros), zero `uses:` (sem superfície de cadeia de
-  suprimentos a fixar), elevação mínima (`contents: read` no topo,
-  `pull-requests: write` só no job), nenhum segredo tocado.
-- **Exercício real, não simulado, incluindo uma falha real corrigida:**
-  - 1ª execução (`permissions: {}`, commit `3b7fb17`): falhou —
+  suprimentos a fixar), elevação mínima e só no job (`{}` no topo,
+  `contents: read` + `pull-requests: write` no job), nenhum segredo tocado.
+- **Exercício real, não simulado, com duas falhas reais corrigidas em
+  sequência** — logs obtidos via `gh api repos/.../actions/jobs/<id>/logs`:
+  - 1ª execução (commit `3b7fb17`, `permissions: {}` no topo): falhou —
     `GraphQL: Resource not accessible by integration
-    (repository.defaultBranchRef)`, log obtido via
-    `gh api repos/.../actions/jobs/<id>/logs`.
-  - Corrigido para `contents: read` neste commit; resultado da execução
-    seguinte (criação do PR contra as diferenças reais acumuladas de 17
-    tickets, e o comportamento de push seguinte com o PR já aberto)
-    confirmado logo abaixo, com o número real do PR.
+    (repository.defaultBranchRef)`.
+  - 2ª execução (commit `35075b4`, `contents: read` só no topo): falhou com
+    o mesmo erro — o token efetivo da execução mostrou só `Metadata: read` e
+    `PullRequests: write`, confirmando que o `permissions` do job zerou o do
+    topo.
+  - 3ª execução (commit seguinte, `contents: read` movido para dentro do
+    job): sucesso — PR real criado, contra as diferenças acumuladas de 17
+    tickets. Confirma "havendo diferenças… um PR é criado" (AC19) contra o
+    GitHub real.
+  - Push seguinte, com o PR já aberto: workflow reconheceu o PR existente e
+    não criou um segundo — confirma "existindo, o trabalho continua no
+    mesmo PR" também contra o GitHub real, não só por leitura do script.
 
 ## Review
 

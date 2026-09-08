@@ -8,13 +8,11 @@ on:
     branches:
       - develop
 
-# contents: read é o piso: mesmo sem checkout, `gh pr list`/`gh pr create`
-# resolvem metadados do repositório (a branch padrão) via GraphQL, e sem esta
-# permissão a chamada falha com "Resource not accessible by integration"
-# (exercitado ao vivo — permissions: {} não bastava). pull-requests: write é
-# a única elevação além disso, e só no job que cria/consulta o PR.
-permissions:
-  contents: read
+# Negado por padrão no topo: um bloco `permissions:` de job SUBSTITUI o do
+# topo para aquele job, em vez de somar — então a elevação real mora só no
+# job abaixo, não aqui (exercitado ao vivo: só `pull-requests: write` no job
+# não bastava, porque isso zera `contents` para `none` dentro dele).
+permissions: {}
 
 concurrency:
   # Sem cancel-in-progress: dois pushes próximos enfileiram em vez de correr
@@ -26,6 +24,13 @@ jobs:
     name: Garantir PR develop -> main
     runs-on: ubuntu-latest
     permissions:
+      # contents: read é o piso: mesmo sem checkout, `gh pr list`/`gh pr
+      # create` resolvem metadados do repositório (a branch padrão) via
+      # GraphQL, e sem esta permissão a chamada falha com "Resource not
+      # accessible by integration" (exercitado ao vivo, duas vezes: primeiro
+      # sem `contents` nenhum, depois com `contents: read` só no topo — as
+      # duas falharam do mesmo jeito até ele entrar aqui, no job).
+      contents: read
       pull-requests: write
     steps:
       # Sem actions/checkout: gh compara os refs remotamente, e nenhum passo
