@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Confiança OIDC entre GitHub Actions e a AWS: um provedor de identidade e dois
+  papéis, sem nenhuma chave de longo prazo guardada no GitHub (spec, 4.10;
+  AC28). Publicada UMA vez, por uma identidade AWS já autorizada — um pipeline
+  sem esta confiança não teria como criá-la sozinho. Não depende das stacks de
+  dados/aplicação e não as modifica.
+
+Parameters:
+  Prefixo:
+    Type: String
+    Default: frase-diaria
+    Description: Prefixo dos nomes dos recursos; casa com as stacks de dados e aplicação.
+  RepositorioGitHub:
+    Type: String
+    Default: soamazyng/frase-diaria-telegram
+    Description: "owner/repo exato do GitHub — usado para restringir a confiança OIDC."
+  BranchDePublicacao:
+    Type: String
+    Default: develop
+    Description: >
+      Branch cujo push aciona a publicação (spec, 4.11: "o gatilho principal é
+      push remoto para dev"). Só workflows rodando a partir desta branch podem
+      assumir o papel de publicação.
+  BranchDeInfraestrutura:
+    Type: String
+    Default: main
+    Description: >
+      Branch onde vive o workflow periódico de reconciliação de publicações
+      (ticket 20) — GitHub só dispara `schedule` a partir do branch padrão.
+
+Resources:
+  # AWS já confia nas CAs que assinam os tokens do GitHub; o thumbprint é
+  # exigido pelo esquema do CloudFormation mas não é mais validado contra ele
+  # para provedores conhecidos (verificado: skill aws-iam, "Verified Edge
+  # Cases"). Mantido pelo valor documentado da GitHub por precaução.
+  ProvedorOIDCDoGitHub:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Tags:
+        - Key: projeto
+          Value: !Ref Prefixo
+
+  # Assumido pelo workflow de push em `develop` (tickets 17/18) para publicar
+  # a stack de aplicação. Nunca toca a stack de dados — publicar/republicar a
+  # aplicação não deve nem precisa alcançar o histórico (spec, 4.9).
+  PapelDePublicacao:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Prefixo}-publicacao"
+      Description: !Sub "CI/CD (${RepositorioGitHub}@${BranchDePublicacao}): publica a stack de aplicação."
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref ProvedorOIDCDoGitHub
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              # `aud` sempre `sts.amazonaws.com`; `sub` é o valor exato (não
+              # precisa de StringLike/wildcard) — restringe a exatamente este
+              # repositório E esta branch (AC28: proprietário, repositório e
+              # contexto de execução).
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${RepositorioGitHub}:ref:refs/heads/${BranchDePublicacao}"
+      Policies:
+        - PolicyName: PublicarStackDeAplicacao
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SAM processa o Transform antes de aplicar o changeset; sem
+              # isto, todo `sam deploy` seria recusado já na primeira chamada.
+              - Sid: TransformSAM
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31"
+              - Sid: GerenciarAStackDeAplicacao
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:TagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Prefixo}-app/*"
+              - Sid: FuncoesLambdaDaAplicacao
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:DeleteFunction
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:ListVersionsByFunction
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-*"
+              - Sid: ApiGatewayHttpExistente
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                  - apigateway:TagResource
+                Resource:
+                  # ARN de API Gateway v2 não carrega o id da conta — o padrão
+                  # /apis* casaria com qualquer API HTTP da conta/região, não
+                  # só a deste projeto (achado do security-review). A condição
+                  # de tag reduz o alcance a recursos que o próprio
+                  # CloudFormation já marca com o nome desta stack; sem ela,
+                  # este seria um curinga sem redução de escopo (AGENTS.md
+                  # exige condição para todo curinga).
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/aws:cloudformation:stack-name: !Sub "${Prefixo}-app"
+              - Sid: ApiGatewayHttpCriacaoDeSubRecursos
+                Effect: Allow
+                Action:
+                  - apigateway:POST
+                Resource:
+                  # A API HTTP já existe (publicada no ticket 03); todo POST
+                  # esperado daqui em diante cria sub-recursos (rota,
+                  # integração, estágio) sob ela, não uma API nova — mas o
+                  # suporte de AWS::ResourceTag do API Gateway a essa operação
+                  # específica não foi verificado ao vivo. Residual aceito
+                  # deliberadamente, não escondido: ticket 18 deve confirmar
+                  # contra o pipeline real e apertar esta condição se o
+                  # serviço suportar.
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*"
+              - Sid: LogsDaAplicacao
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                  - logs:TagResource
+                  - logs:ListTagsForResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${Prefixo}-*"
+              - Sid: AgendamentosDaAplicacao
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:GetSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:TagResource
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${Prefixo}-*"
+              - Sid: PapeisDeExecucaoDaAplicacao
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:PassRole
+                Resource:
+                  # Só os papéis de execução que o SAM cria/gerencia DENTRO da
+                  # stack de aplicação — nunca o papel de publicação nem o de
+                  # infraestrutura, e nunca um papel fora deste prefixo
+                  # (PassRole aberto + deploy de Lambda seria escalonamento de
+                  # privilégio; verificado na skill aws-iam).
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Prefixo}-app-*"
+
+  # Assumido pelo workflow periódico de reconciliação de publicações (ticket
+  # 20, ainda não construído): por enquanto só leitura, porque a lógica de
+  # recuperação em si ainda não existe. Estender esta policy quando o ticket
+  # 20 definir exatamente que ação de recuperação ela precisa executar — não
+  # conceder de antemão o que ainda não tem uso concreto.
+  PapelDeInfraestrutura:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Prefixo}-infraestrutura"
+      Description: !Sub "CI/CD (${RepositorioGitHub}@${BranchDeInfraestrutura}): inspeciona o estado da publicação."
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref ProvedorOIDCDoGitHub
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${RepositorioGitHub}:ref:refs/heads/${BranchDeInfraestrutura}"
+      Policies:
+        - PolicyName: InspecionarPublicacao
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${Prefixo}-app/*"
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefixo}-*"
+
+Outputs:
+  ProvedorOIDCArn:
+    Value: !Ref ProvedorOIDCDoGitHub
+    Export:
+      Name: !Sub "${Prefixo}-ProvedorOIDCArn"
+  PapelDePublicacaoArn:
+    Description: Cole em `role-to-assume` no workflow de publicação (não é segredo).
+    Value: !GetAtt PapelDePublicacao.Arn
+    Export:
+      Name: !Sub "${Prefixo}-PapelDePublicacaoArn"
+  PapelDeInfraestruturaArn:
+    Description: Cole em `role-to-assume` no workflow de reconciliação (não é segredo).
+    Value: !GetAtt PapelDeInfraestrutura.Arn
+    Export:
+      Name: !Sub "${Prefixo}-PapelDeInfraestruturaArn"
