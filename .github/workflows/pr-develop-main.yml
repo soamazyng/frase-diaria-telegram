@@ -246,6 +246,27 @@ jobs:
 
           echo "publicar=sim" >> "$GITHUB_OUTPUT"
 
+      # DEBUG TEMPORÁRIO (ticket 18): o assume-role real falhou com "Not
+      # authorized" na primeira tentativa. Em vez de adivinhar o formato do
+      # claim `sub` (o AGENTS.md proíbe isso — "nunca inventá-lo"), este
+      # passo pega o token OIDC real desta execução e imprime só o `sub` e o
+      # `aud` decodificados — nunca o token inteiro. Remover depois de
+      # confirmar e corrigir a trust policy.
+      - name: "[debug] Ler claim sub do token OIDC real"
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        run: |
+          set -euo pipefail
+          resposta="$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")"
+          payload="$(echo "$resposta" | jq -r .value | cut -d'.' -f2)"
+          # base64url -> base64 padrão, com padding
+          payload="$(echo "$payload" | tr '_-' '/+')"
+          case $((${#payload} % 4)) in
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+          esac
+          echo "$payload" | base64 -d | jq '{sub, aud, repository, repository_id, repository_owner, repository_owner_id, ref}'
+
       - name: Configurar credenciais AWS (OIDC)
         if: steps.checar-atualidade.outputs.publicar == 'sim'
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
