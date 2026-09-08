@@ -191,6 +191,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # `make publicar-app-artefato` chama `uvx` (via a variável SAM do
+      # Makefile) — sem este passo, ausente aqui até a primeira execução
+      # real do pipeline expor o erro (`uvx: not found`), nenhuma versão do
+      # SAM CLI existe no runner deste job.
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: artefato-${{ github.sha }}

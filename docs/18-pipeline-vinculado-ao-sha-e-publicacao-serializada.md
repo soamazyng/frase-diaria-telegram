@@ -235,6 +235,32 @@ melhoria opcional, é um defeito bloqueante descoberto ao exercitar o
 pipeline de verdade pela primeira vez, da mesma natureza do bug do `.lock`
 acima.
 
+## Terceira execução real — OIDC funcionou, faltava `uv` no job
+
+Com a trust policy corrigida, a autenticação OIDC passou (progresso real:
+esta foi a primeira vez que o job `publicar` avançou além do
+`configure-aws-credentials`). Falhou em seguida em `sam deploy (artefato já
+construído)`: `/bin/sh: 1: uvx: not found`, `make: *** [Makefile:85:
+publicar-app-artefato] Error 127`. **Nenhuma mutação na stack ocorreu** — o
+erro acontece antes de qualquer chamada real à AWS de deploy.
+
+Causa: o job `publicar` nunca teve o passo `astral-sh/setup-uv`, só
+`verificar` e `construir` o tinham. `make publicar-app-artefato` depende da
+variável `SAM` do Makefile (`uvx --from aws-sam-cli sam`), que precisa de
+`uv`/`uvx` no runner. Um descuido puro e simples na primeira versão do
+workflow, só visível rodando de verdade — `actionlint`/`shellcheck` não
+detectam ausência de uma ferramenta de runtime, só sintaxe.
+
+O tratamento de falha do próprio pipeline funcionou como desenhado: o passo
+final "Registrar resultado da publicação" (com `if: always()`) rodou mesmo
+com o deploy falho, viu `DESFECHO_DO_DIAGNOSTICO=skipped` (o diagnóstico
+nunca chegou a rodar) e registrou `state=failure` na implantação do GitHub
+— exatamente o comportamento que a checklist do ticket 18 exige para uma
+publicação malsucedida.
+
+Corrigido adicionando `astral-sh/setup-uv` ao job `publicar`, no mesmo
+ponto em que os outros dois jobs o têm. `actionlint`/`shellcheck` revalidados.
+
 ## Verificação
 
 **Exercitado de verdade, não só lido:**
