@@ -55,7 +55,14 @@ jobs:
             fi
           done
           if [ -z "$shaImplantado" ]; then
-            echo "::error::nenhuma implantação 'success' encontrada para o ambiente producao; não há o que marcar como estável."
+            # Falha de verdade, não só um aviso: sem nada para comparar,
+            # deixar os passos seguintes rodarem abriria uma issue de
+            # "divergência" com SHA implantado vazio — diagnóstico errado
+            # (não houve recuperação nenhuma, simplesmente não existe
+            # implantação 'success' para achar). Nenhum passo seguinte tem
+            # `always()`, então os dois ficam `skipped` corretamente.
+            echo "::error::nenhuma implantação 'success' encontrada para o ambiente producao; não há o que marcar como estável nem divergência para registrar."
+            exit 1
           fi
           echo "sha=$shaImplantado" >> "$GITHUB_OUTPUT"
 

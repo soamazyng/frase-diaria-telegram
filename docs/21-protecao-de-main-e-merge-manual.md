@@ -93,9 +93,34 @@ essas buscas.
 
 ## Review
 
-Não se aplica `/code-review` de Standards/Spec em dois eixos nem
-`security-review` de aplicação — sem código Python nesta entrega, só
-workflow YAML e configuração de repositório/branch via API.
+`security-review` de aplicação não se aplica — sem código Python nesta
+entrega. `/code-review` (agente em background) sobre o diff completo do
+ticket encontrou 3 achados:
+
+- **Corrigido — corretude:** "Localizar a última publicação bem-sucedida"
+  logava `::error::` quando nenhuma implantação `success` era encontrada,
+  mas não interrompia o passo — a execução seguia com `sha=""`, e o passo
+  seguinte abriria uma issue de "divergência" com SHA implantado vazio e
+  texto sugerindo que uma recuperação automática trocou a versão ativa,
+  quando na verdade nenhuma implantação foi encontrada. Corrigido com
+  `exit 1`: sem `always()` nos passos seguintes, os dois ficam `skipped` e
+  o job falha de forma visível, sem diagnóstico errado.
+- **Aceito, não corrigido — duplicação/baixa:** o loop "achar a última
+  implantação `success`" já existia, com pequenas variações
+  (`per_page`, o que pula), em `pr-develop-main.yml` (ticket 19) e
+  `reconciliador.yml` (ticket 20); esta é a terceira cópia. Mesmo
+  trade-off já documentado nos dois tickets anteriores — extrair uma
+  composite action arriscaria reintroduzir uma regressão sutil em lógica
+  já exercitada ao vivo, sem tempo de testar de novo com o mesmo rigor.
+- **Aceito, não corrigido — robustez/baixa:** "Registrar divergência" não
+  tem verificação de idempotência antes de `gh issue create` — um re-run
+  manual do workflow ou uma redelivery do webhook `pull_request` criaria
+  uma issue duplicada. Confirmado que os dois `gh issue create`
+  pré-existentes do projeto (tickets 19 e 20) têm exatamente a mesma
+  lacuna, nunca corrigida — não é uma regressão introduzida aqui, e
+  corrigir só esta cópia criaria tratamento inconsistente entre os três
+  pontos. Risco baixo: no máximo ruído (issue duplicada), nunca corrupção
+  de estado ou reenvio indevido.
 
 ## Próximo passo
 
