@@ -1,0 +1,86 @@
+name: Verificar merge para main
+
+# Ticket 21 (spec, 4.11): "após o merge, registrar qual SHA testado foi
+# incorporado, validar equivalência de conteúdo e marcar a versão como
+# estável". Só audita e registra — nunca publica (AC27, "o evento de merge
+# não refaz a publicação").
+#
+# `pull_request` (não `pull_request_target`): token só leitura por padrão,
+# sem acesso a segredos além do que este job declara explicitamente. Não há
+# checkout, build nem execução de código do PR — só chamadas de API sobre o
+# evento já mergeado (docs/pesquisa-agents-seguranca.md, "Inputs não
+# confiáveis e triggers privilegiados").
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  verificar-merge-estavel:
+    name: Verificar merge para main
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      # Nem checkout nem leitura de conteúdo do repositório acontecem
+      # aqui — só chamadas à API de Deployments e de Issues sobre o
+      # evento já mergeado, então `contents` não é concedido.
+      deployments: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA_INCORPORADO: ${{ github.event.pull_request.head.sha }}
+      SHA_MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+      NUMERO_PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Localizar a última publicação bem-sucedida
+        # A API de Deployments (ambiente "producao", já registrada pelo
+        # job "publicar" do ticket 18) é a fonte de verdade do que está de
+        # fato implantado — não o SHA testado no momento do PR, que uma
+        # recuperação automática (ticket 19) pode ter superado depois.
+        # Mesmo padrão de busca do passo "Localizar última publicação
+        # saudável" (ticket 19), sem pular nenhuma implantação aqui.
+        id: implantada
+        run: |
+          set -euo pipefail
+          shaImplantado=""
+          for id in $(gh api "repos/$GH_REPO/deployments?environment=producao&per_page=20" --jq '.[].id'); do
+            estado="$(gh api "repos/$GH_REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // empty')"
+            if [ "$estado" = "success" ]; then
+              shaImplantado="$(gh api "repos/$GH_REPO/deployments/$id" --jq .sha)"
+              break
+            fi
+          done
+          if [ -z "$shaImplantado" ]; then
+            echo "::error::nenhuma implantação 'success' encontrada para o ambiente producao; não há o que marcar como estável."
+          fi
+          echo "sha=$shaImplantado" >> "$GITHUB_OUTPUT"
+
+      - name: Marcar a versão como estável
+        if: steps.implantada.outputs.sha == env.SHA_INCORPORADO
+        run: |
+          set -euo pipefail
+          corpo="$(jq -n --arg ref "$SHA_INCORPORADO" \
+            --arg descricao "PR #$NUMERO_PR mergeado ($SHA_MERGE_COMMIT); conteúdo equivalente ao implantado em produção" \
+            '{ref: $ref, environment: "main-estavel", auto_merge: false, required_contexts: [], description: $descricao}')"
+          id="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
+          gh api --method POST "repos/$GH_REPO/deployments/$id/statuses" \
+            -f state=success -f description="equivalência de conteúdo confirmada contra a implantação ativa"
+
+      - name: Registrar divergência (merge não corresponde ao implantado)
+        # "Uma recuperação invalida esse resultado mesmo que o SHA já
+        # tenha passado antes" (checklist do ticket 21) — se uma
+        # recuperação automática trocou a versão ativa depois que os
+        # checks deste PR passaram, o SHA mergeado não é mais o
+        # implantado, e não pode ser marcado estável sem revisão manual.
+        if: steps.implantada.outputs.sha != env.SHA_INCORPORADO
+        env:
+          SHA_IMPLANTADO: ${{ steps.implantada.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "$GH_REPO" \
+            --title "Merge do PR #$NUMERO_PR não corresponde ao código implantado" \
+            --body "O PR #$NUMERO_PR foi mergeado em main (commit $SHA_MERGE_COMMIT, ponta de develop $SHA_INCORPORADO), mas a última implantação bem-sucedida do ambiente producao é $SHA_IMPLANTADO — provavelmente uma recuperação automática substituiu a versão ativa depois que os checks deste PR passaram. Não marcado como estável automaticamente. Procedimento manual: comparar os dois SHAs e decidir se main precisa de correção antes do próximo merge."
