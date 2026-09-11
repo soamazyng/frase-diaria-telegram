@@ -1,0 +1,184 @@
+# Documentação de operação e aceite real controlado
+
+## Escopo desta entrega
+
+Ticket 22 tem dois tipos de item: documentação/verificação segura (o que
+esta entrega cobre) e ações reais visíveis para a usuária — entrega diária
+de verdade, `/frase` e `/status` na conversa privada — que **ficam
+explicitamente pendentes**, por decisão da usuária, até autorização
+específica. O item de avaliação pessoal após duas semanas de uso (AC31)
+não pode ser satisfeito agora por definição — precisa de duas semanas
+reais de uso passarem.
+
+## Runbook de operação (AC30)
+
+Este runbook não duplica os documentos por ticket — reúne, por tarefa, o
+que já está espalhado e aponta a fonte exata.
+
+### Configurar credenciais
+
+Os quatro segredos do projeto ficam no SSM Parameter Store, prefixo
+`/frase-diaria/`, como `SecureString` — nunca no Git, nunca colados numa
+conversa com agente. Procedimento completo, incluindo o comando exato e a
+recomendação de gerar valores diretamente para o cofre sem passar pela
+conversa: `rules.md`, seção "Segredos".
+
+- `telegram-bot-token`, `telegram-chat-id`, `webhook-secret`: ver
+  `rules.md` e `CLAUDE.md` ("Segredos") para o que cada um guarda.
+- `notion-token`, `notion-pagina-id`: mesmo mecanismo; aceita o id puro ou
+  a URL completa da página (o cliente normaliza) — `CLAUDE.md`, "Segredos".
+- **Rotação:** trocar o valor no SSM não basta sozinho — a Lambda cacheia
+  segredos por container (`lru_cache` em
+  `infraestrutura/composicao.py`); o efeito só é imediato depois de
+  republicar (`rules.md`, "Publicar").
+
+### Diagnosticar uma falha
+
+- **Primeira parada: `/status`** (ticket 15) — último envio confirmado,
+  próxima diária, situação do dia, origem da coleção (Notion ou cache),
+  falha ativa — tudo em horário local, sem consumir frase nem alterar
+  ciclo (`docs/15-status-completo.md`).
+- **Publicação:** `GET /health` no endpoint publicado (`CLAUDE.md`) mostra
+  versão ativa, dependências e agendamento. O passo "Verificar saúde,
+  versão, dependências, webhook e agendamento" do pipeline
+  (`.github/workflows/pr-develop-main.yml`,
+  `.github/actions/diagnosticar-publicacao`) faz a mesma checagem
+  automaticamente a cada publicação.
+- **Logs:** CloudWatch Logs, retenção de 14 dias, conteúdo estruturado
+  mínimo — nunca payload completo do Telegram/Notion nem segredos
+  (`AGENTS.md`, "AWS Lambda e infraestrutura").
+- **Issues abertas automaticamente:** um diagnóstico malsucedido que
+  desabilita o agendamento diário sempre abre uma issue no GitHub com o
+  procedimento manual específico daquele caminho — ver os passos
+  "Registrar diagnóstico no GitHub" em `pr-develop-main.yml` e
+  `reconciliador.yml`.
+
+### Executar uma recuperação
+
+- **Automática, dentro do próprio pipeline:** falha de deploy ou de
+  diagnóstico pós-publicação já aciona recuperação para a última
+  publicação saudável sem intervenção — `docs/19-recuperacao-da-versao-anterior.md`
+  (dois testes de fogo reais documentados, incluindo o achado do
+  `always()` faltando e a correção).
+- **Periódica, sem ninguém para reagir:** implantação travada ou PR
+  fechado sem merge são cobertos de hora em hora pelo reconciliador —
+  `docs/20-reconciliador-de-publicacoes-e-dados.md`.
+- **Procedimento manual de último recurso** (quando a recuperação
+  automática também falha, ex. artefato com retenção expirada): `git
+  checkout <sha-válido>` seguido de `make publicar-app VERSAO=<sha-válido>`
+  a partir de um checkout local, publicando exatamente esse commit;
+  reabilitar o agendamento diário depois é responsabilidade manual (AWS
+  Console ou `aws scheduler update-schedule`) — mesmo texto que a issue
+  automática já entrega quando esse caminho é necessário.
+- **Limitação conhecida deste procedimento manual:** ele não passa pela
+  API de Deployments do GitHub, então o reconciliador e a verificação
+  pós-merge (ticket 21) continuam enxergando a última implantação
+  registrada automaticamente até a próxima publicação normal — aceito,
+  documentado, não é um caminho usado no dia a dia.
+
+## Aceite na AWS
+
+- [ ] **Entrega diária real, `/frase` e `/status` na conversa privada** — **pendente**, decisão explícita de não executar nesta rodada; exige autorização específica da usuária antes de qualquer envio real.
+- [x] **Persistência entre versões (AC26) — verificado ao vivo, read-only, no nível de metadado da tabela.** A tabela `frase-diaria-estado` (`aws dynamodb describe-table`) mostra `CreationDateTime: 2026-09-07T13:12:34-03:00` e 146 itens — sobreviveu, sem recriação, às dezenas de republicações da stack de aplicação feitas nos tickets 18–21 desde então. A stack `frase-diaria-dados` nunca foi atualizada desde a criação (`LastUpdatedTime` igual a `CreationTime`, a 6 segundos de diferença), confirmando que nenhuma dessas republicações da aplicação a tocou. **Ressalva:** isto confirma que nenhuma linha foi apagada nem a tabela recriada; não é uma leitura de conteúdo de um ciclo específico antes/depois de um deploy, então uma corrupção silenciosa de valores (sem mudar contagem de itens) não seria detectada por esta checagem.
+- [x] **Achado real — drift entre template e recurso implantado, corrigido.** `infra/dados.yaml:26` declara `DeletionProtectionEnabled: true` (proteção nativa do DynamoDB, complementar ao `DeletionPolicy: Retain` do CloudFormation — o comentário do próprio template diz "sem os dois, um DeleteTable avulso apaga o histórico"). A tabela real estava com essa proteção **desligada** (`describe-table` → `DeletionProtectionEnabled: false`), porque a stack `frase-diaria-dados` nunca tinha sido reaplicada desde que essa linha entrou no template. **Corrigido ao vivo, autorizado pela usuária:** `make publicar-dados` rodou um changeset com uma única mudança (`Modify Tabela`), completou `UPDATE_COMPLETE`, e `describe-table` confirmou depois `DeletionProtectionEnabled: true` — com os mesmos 146 itens de antes, sem perda de dado. `DeletionPolicy: Retain` (o outro lado da proteção, contra exclusão da própria stack) segue ativo e não foi testado ao vivo nesta sessão.
+- [x] **Nenhum ambiente permanente de dev criado.** `aws cloudformation list-stacks` mostra cinco stacks na conta. Três são deste projeto (`frase-diaria-bootstrap`, `frase-diaria-app`, `frase-diaria-dados`). Uma quarta, criada automaticamente pelo `--resolve-s3` do próprio `Makefile` deste projeto (bucket de staging de artefato do SAM CLI, sem função de "ambiente" — só empacotamento), tem data de criação de segundos antes da stack `frase-diaria-dados`, confirmando que também é deste projeto, não de outro material (checado ao vivo antes de afirmar — a suposição inicial de que seria alheia estava errada). A quinta, um ambiente Elastic Beanstalk, tem data de criação de 2023, quase três anos antes deste projeto começar — essa sim, de outro trabalho na mesma conta compartilhada. Nenhuma das cinco é um ambiente de *dev* da aplicação deste projeto.
+- [x] **Recuperação exercitada de forma controlada** — já satisfeito por exercícios reais anteriores desta sessão, não repetido aqui: os dois testes de fogo do ticket 19 (falha de deploy e falha de diagnóstico, ambos revertidos) e a execução real do reconciliador contra o cenário de "candidata abandonada" no ticket 20 (falso positivo real, corrigido e reexercitado com sucesso). Ver `docs/19-recuperacao-da-versao-anterior.md` e `docs/20-reconciliador-de-publicacoes-e-dados.md`.
+
+## Estimativa de custo (ticket 01) vs. consumo real observado
+
+Consulta ao vivo em 2026-09-11, contra a conta e o repositório reais.
+
+| Item | Estimado (ticket 01) | Real observado | Situação |
+|---|---|---|---|
+| GitHub Actions (minutos/mês) | ~880 de 3.000 (29%) | **154 min** em setembro (parcial, até dia 11), custo líquido **US$0** (desconto integral do plano Pro) | Dentro do esperado; folga ainda maior que a estimada |
+| Lambda — invocações/mês | ~8.730 | 2.178 até agora no mês (Always Free: 1.000.000/mês) | 0,2% da franquia |
+| Lambda — GB-segundos/mês | ~1.100 | 193,97 até agora (Always Free: 400.000/mês) | <0,1% da franquia |
+| EventBridge Scheduler | ~8.670/mês | `frase-diaria-reconciliador` confirmado em `rate(5 minutes)` (Always Free: 14.000.000/mês) — volume real ainda baixo porque o agendamento roda há poucos dias desde o ticket 14, sem contagem real de invocações do mês inteiro observada ainda | Projeção consistente com a estimativa: 8.670/14.000.000 = 0,06% da franquia em regime pleno (mesmo cálculo de `docs/01-custo-e-elegibilidade.md`), não uma medição ao vivo |
+| DynamoDB (armazenamento) | poucos MB, R$0 | 6,92×10⁻⁶ GB de 25 GB (Always Free) | Desprezível, como estimado |
+| Custo real atribuído ao projeto (Cost Explorer, setembro) | ~US$0,01/mês (estimado) | Amazon API Gateway **US$0,0001** + Amazon DynamoDB **US$0,0012** = **US$0,0013** no mês até agora | Melhor que a estimativa |
+
+**Conclusão:** a estimativa do ticket 01 se confirma na operação real — nenhum
+serviço deste projeto sai do Always Free, e o custo direto atribuível (fora
+GitHub Actions, coberto pelo plano Pro já existente) é uma fração de
+centavo por mês. Outros itens de custo apareceram na mesma consulta ao
+Cost Explorer (Lightsail, Route 53, VPC) — nenhum template deste projeto
+declara esses serviços (`grep` confirmado em todos os `infra/*.yaml`,
+consistente com a decisão registrada "sem VPC nem NAT"), o que torna
+provável que sejam de outro material na mesma conta compartilhada
+(`docs/01-custo-e-elegibilidade.md` já registra essa conta como
+compartilhada com material de estudo). **Não confirmado por tag ou id de
+recurso** — a mesma conta já teve, no ticket 01, um recurso criado por
+engano durante uma sondagem deste próprio projeto, então a origem não deve
+ser presumida sem essa checagem adicional caso vire relevante no futuro.
+
+## Limitações remanescentes (registro explícito)
+
+- **Sem garantia de entrega exatamente uma vez sob falha externa ambígua**
+  (spec, seção sobre idempotência) — banco e chamada ao Telegram não estão
+  na mesma transação; um resultado ambíguo marca a parte como incerta e
+  **suspende reenvio automático** dessa parte, aceitando o risco de uma
+  mensagem perdida em troca de nunca duplicar. Decisão confirmada da
+  usuária (`CLAUDE.md`, "Decisões confirmadas").
+- ~~Deletion protection do DynamoDB fora de sincronia com o template~~ —
+  achado nesta entrega, corrigido ao vivo (ver seção "Aceite na AWS"
+  acima).
+- **Procedimento manual de recuperação de último recurso não atualiza a
+  API de Deployments** — aceito, ver runbook acima.
+- **Três cópias quase idênticas do loop "achar a última implantação
+  bem-sucedida"** entre `pr-develop-main.yml`, `reconciliador.yml` e
+  `verificar-merge.yml`, e três chamadas `gh issue create` sem
+  deduplicação — trade-offs deliberados, registrados em `docs/20` e
+  `docs/21`, para não arriscar regressão numa lógica já exercitada ao vivo
+  extraindo uma composite action sem tempo de retestar com o mesmo rigor.
+- **`iam:UpdateRoleDescription` ausente na identidade local** (`docs/20`)
+  — qualquer mudança futura de `Description` de uma role em
+  `infra/bootstrap.yaml` trava a stack em `UPDATE_ROLLBACK_FAILED`; o
+  procedimento de destravamento já está documentado.
+- **Avaliação pessoal de duas semanas (AC31)** — não pode ser satisfeita
+  nesta sessão nem em nenhuma sessão futura antes do prazo; fica como
+  pendência explícita, não como item esquecido.
+
+## Review
+
+Sem código Python nesta entrega — princípios gerais de clareza e não
+duplicação de `python-clean-code` aplicados à prosa: cada seção do runbook
+aponta para uma única fonte de verdade em vez de reexplicar, e os achados
+reais (drift de `DeletionProtectionEnabled`) são descritos com o comando
+exato que os revelou, não uma afirmação sem verificação.
+
+`/code-review` (agente em background) encontrou 7 achados, todos
+corrigidos:
+
+- Dois checkboxes trocados na seção "Aceite na AWS": o item da entrega
+  real (pendente) estava `[x]`, o da recuperação exercitada (já satisfeito)
+  estava `[ ]` — invertidos entre si, contradizendo o próprio texto de
+  cada linha.
+- Percentual da franquia do EventBridge Scheduler citado como "0,9%"
+  (na verdade o valor de outra linha da tabela, invocações do Lambda) em
+  vez do "0,06%" correto, e apresentado como consumo já comprovado quando
+  era projeção.
+- **Achado mais sério:** a afirmação de que `aws-sam-cli-managed-default`
+  era "de outro material" estava errada e não verificada — a stack tem
+  data de criação de segundos antes de `frase-diaria-dados`, confirmando
+  que é a própria stack de staging que o `--resolve-s3` deste projeto cria
+  automaticamente. Corrigido depois de checar a data de criação ao vivo em
+  vez de presumir pelo nome.
+- Número da conta AWS reproduzido entre aspas ao citar `docs/01`, contra a
+  regra do `AGENTS.md` de não repetir um identificador só porque ele já
+  aparece em outro lugar do repositório — removido, mantida só a
+  referência ao documento.
+- Alegação de AC26 mais forte que a evidência (metadado de tabela, não
+  conteúdo de um ciclo específico) — ressalva adicionada.
+- Conclusão sobre Lightsail/Route53/VPC pertencerem a outro material
+  suavizada para "provável, não confirmado por tag/id de recurso",
+  citando o precedente do ticket 01 de um recurso criado por engano na
+  mesma conta.
+
+## Próximo passo
+
+Pendente autorização específica da usuária para:
+
+1. Exercitar o aceite real na AWS: entrega diária, `/frase` e `/status` na
+   conversa privada.
+2. Registrar a avaliação pessoal depois de duas semanas de uso (a partir
+   de quando o envio diário estiver de fato em regime — ver item 1).
