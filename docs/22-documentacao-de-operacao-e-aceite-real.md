@@ -35,18 +35,26 @@ impressos.
   de entrega exatamente uma vez sob falha externa ambígua") acontecendo de
   verdade, com o resultado correto: nenhuma duplicata, mensagem entregue,
   reenvio automático corretamente suspenso.
-- **Achado novo, não corrigido aqui — possível gap na classificação de
-  erro da tentativa 1.** O traceback mostra uma exceção genérica
-  (`except Exception` em `aplicacao/processar_pedido.py:189-192`) — não
-  uma das exceções de domínio conhecidas (`ReservaPendente`,
-  `ConflitoDeConcorrencia`) nem um resultado classificado como transitório
-  pelo `telegram/canal.py`. A duração (~20s) é consistente com um timeout
-  de rede puro (sem resposta HTTP do Telegram), que talvez não seja
-  reconhecido pela classificação transitório/permanente do AC13, caindo
-  direto no catch-all. Não investigado a fundo aqui porque exigiria
-  logging adicional (mudança de código) fora do escopo documental deste
-  ticket — registrado como limitação remanescente, candidato a um ticket
-  futuro se voltar a acontecer.
+- **Achado novo, não corrigido aqui — gap real de classificação,
+  localizado com precisão pelo `/code-review`.** O traceback mostra uma
+  exceção genérica (`except Exception` em
+  `aplicacao/processar_pedido.py:190-194`) — não uma das exceções de
+  domínio conhecidas (`ReservaPendente`, `ConflitoDeConcorrencia`) nem um
+  resultado classificado como transitório pelo `telegram/canal.py`. A
+  primeira hipótese registrada aqui ("timeout de rede sem resposta HTTP")
+  estava tecnicamente errada — esse caso já é capturado por
+  `except urllib.error.URLError` em `canal.py:81` e reclassificado como
+  transitório antes de chegar ao catch-all. **O gap real é mais estreito:**
+  `resposta.read()` (`canal.py:71`) roda *dentro* do mesmo `try` que
+  captura `URLError`, mas um timeout ali levanta `socket.timeout`
+  (`TimeoutError`), não `URLError` — ou seja, um timeout durante a
+  *leitura* da resposta, depois que a conexão HTTP já foi estabelecida,
+  escapa da classificação transitório/permanente do AC13 e cai direto no
+  catch-all genérico, consistente com a duração de ~20s observada. Não
+  corrigido aqui — exigiria mudança de código (capturar `TimeoutError`
+  também) fora do escopo documental deste ticket — registrado como
+  limitação remanescente, candidato a um ticket futuro se voltar a
+  acontecer.
 
 ## Runbook de operação (AC30)
 
@@ -160,14 +168,16 @@ ser presumida sem essa checagem adicional caso vire relevante no futuro.
   usuária (`CLAUDE.md`, "Decisões confirmadas"). **Exercitada de verdade
   nesta sessão** (seção "`/frase` e `/status` reais" acima): resultado
   correto na prática — entrega única, sem duplicata, reenvio suspenso.
-- **Possível gap na classificação de erro de rede sem resposta HTTP** —
-  achado na mesma exercitação real: uma exceção não classificada (não é
-  `ReservaPendente`, `ConflitoDeConcorrencia`, nem um resultado
-  transitório/permanente do `telegram/canal.py`) caiu no catch-all
-  genérico de `processar_pedido.py`, com duração (~20s) consistente com
-  timeout de rede sem resposta do Telegram. Não corrigido — exigiria
-  mudança de código fora do escopo documental deste ticket. Candidato a
-  ticket futuro se se repetir.
+- **Gap real na classificação de timeout durante a leitura da resposta do
+  Telegram** — achado na mesma exercitação real, mecanismo localizado com
+  precisão pelo `/code-review` (ver seção "`/frase` e `/status` reais"
+  acima para o detalhe): `resposta.read()` em `canal.py:71` roda dentro do
+  `try` que só captura `URLError`; um timeout ali levanta `TimeoutError`,
+  que escapa dessa captura e cai no catch-all genérico de
+  `processar_pedido.py:190`, sem ser classificado como transitório pelo
+  AC13. Não corrigido — exigiria mudança de código (capturar
+  `TimeoutError` também) fora do escopo documental deste ticket. Candidato
+  a ticket futuro se se repetir.
 - ~~Deletion protection do DynamoDB fora de sincronia com o template~~ —
   achado nesta entrega, corrigido ao vivo (ver seção "Aceite na AWS"
   acima).
@@ -222,6 +232,21 @@ corrigidos:
   suavizada para "provável, não confirmado por tag/id de recurso",
   citando o precedente do ticket 01 de um recurso criado por engano na
   mesma conta.
+
+Uma segunda rodada de `/code-review`, sobre o registro do aceite real
+(`/frase`/`/status`), encontrou mais 2 achados, ambos corrigidos:
+
+- Citação de linha errada por off-by-one: o `except Exception` fica em
+  `aplicacao/processar_pedido.py:190`, não `189-192`.
+- **A hipótese técnica do "gap" estava errada** — um timeout de conexão
+  puro (sem resposta HTTP nenhuma) já é capturado por
+  `except urllib.error.URLError` em `canal.py` e reclassificado como
+  transitório; nunca chegaria ao catch-all. O `/code-review` localizou o
+  mecanismo real: `resposta.read()` roda dentro do mesmo `try` que só
+  pega `URLError`, e um timeout *durante a leitura* da resposta (depois
+  da conexão já estabelecida) levanta `TimeoutError`, que escapa dessa
+  captura. Corrigido para descrever o mecanismo real, verificado lendo o
+  código de `canal.py` linha a linha, não apenas aceitando a correção.
 
 ## Próximo passo
 
