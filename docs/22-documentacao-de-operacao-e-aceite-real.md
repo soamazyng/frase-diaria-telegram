@@ -2,13 +2,51 @@
 
 ## Escopo desta entrega
 
-Ticket 22 tem dois tipos de item: documentação/verificação segura (o que
-esta entrega cobre) e ações reais visíveis para a usuária — entrega diária
-de verdade, `/frase` e `/status` na conversa privada — que **ficam
-explicitamente pendentes**, por decisão da usuária, até autorização
-específica. O item de avaliação pessoal após duas semanas de uso (AC31)
-não pode ser satisfeito agora por definição — precisa de duas semanas
-reais de uso passarem.
+Ticket 22 tem dois tipos de item: documentação/verificação segura e ações
+reais visíveis para a usuária. As primeiras foram feitas de imediato; as
+segundas — `/frase` e `/status` na conversa privada — ficaram pendentes
+até autorização específica, dada e exercitada em sessão seguinte (ver
+"`/frase` e `/status` reais" abaixo). A entrega **diária** agendada (às
+08:00) já está confirmada em uso normal pela usuária, independente desta
+sessão. Só o item de avaliação pessoal após duas semanas de uso (AC31)
+continua pendente — não pode ser satisfeito agora por definição, precisa
+de duas semanas reais de uso passarem.
+
+## `/frase` e `/status` reais, exercitados na conversa privada
+
+Autorizado pela usuária e disparado de verdade contra a API pública do
+webhook (`POST /telegram/webhook`, mesmo endpoint que o Telegram usa),
+simulando exatamente o corpo que um `/frase` e um `/status` reais dessa
+conversa produziriam — sem tocar segredos na saída visível: o token do
+webhook e o `chat_id` foram lidos do SSM só para a chamada, nunca
+impressos.
+
+- **`/status`: entregue e confirmado.** Log do worker: `status enviado`
+  (690 ms). A usuária confirmou o recebimento.
+- **`/frase`: entregue, mas classificado internamente como incerto —
+  achado real, não um bug de duplicação.** A tentativa 1 terminou em
+  `erro` (exceção não classificada, ~20s de duração — mais abaixo). A
+  tentativa 2 terminou em `incerto` (~16,5s) e o pedido ficou `parcial`,
+  reenvio automático suspenso. A usuária confirmou ter recebido a frase
+  **uma única vez** — ou seja, a tentativa 2 realmente entregou a
+  mensagem no Telegram, mas a aplicação não conseguiu confirmar isso a
+  tempo, e por desenho preferiu marcar como incerto a arriscar duplicar.
+  **Isto é exatamente a limitação já documentada e aceita** ("sem garantia
+  de entrega exatamente uma vez sob falha externa ambígua") acontecendo de
+  verdade, com o resultado correto: nenhuma duplicata, mensagem entregue,
+  reenvio automático corretamente suspenso.
+- **Achado novo, não corrigido aqui — possível gap na classificação de
+  erro da tentativa 1.** O traceback mostra uma exceção genérica
+  (`except Exception` em `aplicacao/processar_pedido.py:189-192`) — não
+  uma das exceções de domínio conhecidas (`ReservaPendente`,
+  `ConflitoDeConcorrencia`) nem um resultado classificado como transitório
+  pelo `telegram/canal.py`. A duração (~20s) é consistente com um timeout
+  de rede puro (sem resposta HTTP do Telegram), que talvez não seja
+  reconhecido pela classificação transitório/permanente do AC13, caindo
+  direto no catch-all. Não investigado a fundo aqui porque exigiria
+  logging adicional (mudança de código) fora do escopo documental deste
+  ticket — registrado como limitação remanescente, candidato a um ticket
+  futuro se voltar a acontecer.
 
 ## Runbook de operação (AC30)
 
@@ -78,7 +116,8 @@ conversa: `rules.md`, seção "Segredos".
 
 ## Aceite na AWS
 
-- [ ] **Entrega diária real, `/frase` e `/status` na conversa privada** — **pendente**, decisão explícita de não executar nesta rodada; exige autorização específica da usuária antes de qualquer envio real.
+- [x] **`/frase` e `/status` exercitados na conversa privada** — feito, ver seção dedicada acima. Confirmado pela usuária: as duas mensagens chegaram, uma única vez cada.
+- [x] **Entrega diária real (agendada, 08:00)** — confirmada pela usuária em uso normal, sem ação especial desta sessão: "diariamente eu já estou recebendo as mensagens, está tudo ok" (2026-09-11). Não é um teste isolado desta entrega, é a operação de regime já em curso.
 - [x] **Persistência entre versões (AC26) — verificado ao vivo, read-only, no nível de metadado da tabela.** A tabela `frase-diaria-estado` (`aws dynamodb describe-table`) mostra `CreationDateTime: 2026-09-07T13:12:34-03:00` e 146 itens — sobreviveu, sem recriação, às dezenas de republicações da stack de aplicação feitas nos tickets 18–21 desde então. A stack `frase-diaria-dados` nunca foi atualizada desde a criação (`LastUpdatedTime` igual a `CreationTime`, a 6 segundos de diferença), confirmando que nenhuma dessas republicações da aplicação a tocou. **Ressalva:** isto confirma que nenhuma linha foi apagada nem a tabela recriada; não é uma leitura de conteúdo de um ciclo específico antes/depois de um deploy, então uma corrupção silenciosa de valores (sem mudar contagem de itens) não seria detectada por esta checagem.
 - [x] **Achado real — drift entre template e recurso implantado, corrigido.** `infra/dados.yaml:26` declara `DeletionProtectionEnabled: true` (proteção nativa do DynamoDB, complementar ao `DeletionPolicy: Retain` do CloudFormation — o comentário do próprio template diz "sem os dois, um DeleteTable avulso apaga o histórico"). A tabela real estava com essa proteção **desligada** (`describe-table` → `DeletionProtectionEnabled: false`), porque a stack `frase-diaria-dados` nunca tinha sido reaplicada desde que essa linha entrou no template. **Corrigido ao vivo, autorizado pela usuária:** `make publicar-dados` rodou um changeset com uma única mudança (`Modify Tabela`), completou `UPDATE_COMPLETE`, e `describe-table` confirmou depois `DeletionProtectionEnabled: true` — com os mesmos 146 itens de antes, sem perda de dado. `DeletionPolicy: Retain` (o outro lado da proteção, contra exclusão da própria stack) segue ativo e não foi testado ao vivo nesta sessão.
 - [x] **Nenhum ambiente permanente de dev criado.** `aws cloudformation list-stacks` mostra cinco stacks na conta. Três são deste projeto (`frase-diaria-bootstrap`, `frase-diaria-app`, `frase-diaria-dados`). Uma quarta, criada automaticamente pelo `--resolve-s3` do próprio `Makefile` deste projeto (bucket de staging de artefato do SAM CLI, sem função de "ambiente" — só empacotamento), tem data de criação de segundos antes da stack `frase-diaria-dados`, confirmando que também é deste projeto, não de outro material (checado ao vivo antes de afirmar — a suposição inicial de que seria alheia estava errada). A quinta, um ambiente Elastic Beanstalk, tem data de criação de 2023, quase três anos antes deste projeto começar — essa sim, de outro trabalho na mesma conta compartilhada. Nenhuma das cinco é um ambiente de *dev* da aplicação deste projeto.
@@ -118,7 +157,17 @@ ser presumida sem essa checagem adicional caso vire relevante no futuro.
   na mesma transação; um resultado ambíguo marca a parte como incerta e
   **suspende reenvio automático** dessa parte, aceitando o risco de uma
   mensagem perdida em troca de nunca duplicar. Decisão confirmada da
-  usuária (`CLAUDE.md`, "Decisões confirmadas").
+  usuária (`CLAUDE.md`, "Decisões confirmadas"). **Exercitada de verdade
+  nesta sessão** (seção "`/frase` e `/status` reais" acima): resultado
+  correto na prática — entrega única, sem duplicata, reenvio suspenso.
+- **Possível gap na classificação de erro de rede sem resposta HTTP** —
+  achado na mesma exercitação real: uma exceção não classificada (não é
+  `ReservaPendente`, `ConflitoDeConcorrencia`, nem um resultado
+  transitório/permanente do `telegram/canal.py`) caiu no catch-all
+  genérico de `processar_pedido.py`, com duração (~20s) consistente com
+  timeout de rede sem resposta do Telegram. Não corrigido — exigiria
+  mudança de código fora do escopo documental deste ticket. Candidato a
+  ticket futuro se se repetir.
 - ~~Deletion protection do DynamoDB fora de sincronia com o template~~ —
   achado nesta entrega, corrigido ao vivo (ver seção "Aceite na AWS"
   acima).
@@ -176,9 +225,12 @@ corrigidos:
 
 ## Próximo passo
 
-Pendente autorização específica da usuária para:
+1. Registrar a avaliação pessoal depois de duas semanas de uso (AC31) —
+   a diária já está confirmada em regime desde antes desta entrega, então
+   a contagem das duas semanas corre a partir de quando a usuária começou
+   a usar, não desta sessão.
+2. Considerar investigar o gap de classificação de erro de rede (seção
+   "Limitações remanescentes") se ele voltar a acontecer.
 
-1. Exercitar o aceite real na AWS: entrega diária, `/frase` e `/status` na
-   conversa privada.
-2. Registrar a avaliação pessoal depois de duas semanas de uso (a partir
-   de quando o envio diário estiver de fato em regime — ver item 1).
+Com isto, todos os itens do ticket 22 sob controle desta sessão estão
+concluídos; só resta o item de tempo (AC31).
