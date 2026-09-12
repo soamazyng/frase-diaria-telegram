@@ -1,0 +1,24 @@
+PROMPT PARA ENCERRAR A SESSÃO DE HOJE
+
+Use a skill `.agents/skills/handoff/SKILL.md` para preparar a continuidade desta
+sessão amanhã.
+
+Registre o estado atual, as decisões, os commits, os testes,
+a versão publicada, os riscos, as pendências e o próximo ticket elegível.
+Não copie conteúdo de documentos já existentes nem inclua segredos ou identificadores sensíveis.
+
+Salve o handoff conforme a skill e entregue o caminho absoluto do arquivo. Gere
+também um prompt pronto para abrir uma nova sessão amanhã.
+
+---------------------------------------------------------------------------------------------------------
+PROMPT PARA RETOMAR AMANHÃ
+
+Continue o trabalho a partir do handoff em:
+/tmp/frase-diaria-telegram-handoff-2026-09-07.md
+
+Leia o handoff, `AGENTS.md`, a spec e os documentos referenciados. Confira o
+estado atual do repositório e da AWS sem expor segredos. Preserve alterações
+existentes. Explique brevemente onde o trabalho parou e implemente o próximo
+ticket elegível, seguindo as skills obrigatórias, os testes, o code-review e o
+commit separado por ticket. Não publique nem altere recursos externos sem
+autorização explícita nesta nova sessão.
