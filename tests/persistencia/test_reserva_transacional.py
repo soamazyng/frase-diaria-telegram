@@ -24,7 +24,7 @@ from frase_diaria.persistencia.reserva import ReservaTransacional
 
 TABELA = "frase-diaria-estado-teste"
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
-PEDIDO = Pedido(identidade="extra#42", origem=Origem.EXTRA, chat_id=672024065)
+PEDIDO = Pedido(identidade="extra#42", origem=Origem.EXTRA, destinatarios=(672024065,))
 
 
 @pytest.fixture

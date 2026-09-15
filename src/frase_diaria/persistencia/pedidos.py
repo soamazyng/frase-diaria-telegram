@@ -18,7 +18,9 @@ class RepositorioDePedidosDynamo:
     Um pedido ocupa vários itens sob a mesma partição:
 
     - `sk = "pedido"` — o estado corrente
-    - `sk = "parte#NNN"` — uma parte confirmada, com o texto enviado
+    - `sk = "parte#<destinatario>#NNN"` — uma parte confirmada, com o texto
+      enviado (v2: por destinatário, já que a mesma parte pode ter desfechos
+      diferentes por pessoa)
     - `sk = "tentativa#<sequencial>"` — o histórico de execuções
 
     Manter partes e tentativas fora do item do pedido é o que impede um item de
@@ -53,7 +55,7 @@ class RepositorioDePedidosDynamo:
                     "identidade": self._identidade_legada(pedido.identidade) or pedido.identidade,
                     "identidade_atual": pedido.identidade,
                     "origem": pedido.origem.value,
-                    "chat_id": pedido.chat_id,
+                    "destinatarios": list(pedido.destinatarios),
                     "estado": pedido.estado_legado,
                     "estado_atual": pedido.estado.value,
                     "motivo_do_estado": pedido.motivo_do_estado,
@@ -88,10 +90,18 @@ class RepositorioDePedidosDynamo:
         ).get("Item")
         if item is None:
             return None
+        destinatarios_gravados = item.get("destinatarios")
+        destinatarios = (
+            tuple(int(d) for d in destinatarios_gravados)
+            if destinatarios_gravados is not None
+            # Formato anterior à v2: um único destinatário, gravado como
+            # `chat_id` — mesmo padrão de compatibilidade que `bot_legado`.
+            else (int(item["chat_id"]),)
+        )
         pedido = Pedido(
             identidade=str(item.get("identidade_atual", item["identidade"])),
             origem=Origem(item["origem"]),
-            chat_id=int(item["chat_id"]),
+            destinatarios=destinatarios,
             estado=EstadoDoPedido(item.get("estado_atual", item["estado"])),
             frase_reservada=item.get("frase_reservada") or None,
             motivo_do_estado=str(item.get("motivo_do_estado") or "estado legado"),
@@ -127,12 +137,12 @@ class RepositorioDePedidosDynamo:
             ":i": self._identidade_legada(pedido.identidade) or pedido.identidade,
             ":identidade_atual": pedido.identidade,
             ":o": pedido.origem.value,
-            ":c": pedido.chat_id,
+            ":d": list(pedido.destinatarios),
         }
         expressao = (
             "SET estado = :e, estado_atual = :atual, motivo_do_estado = :m, frase_reservada = :f, "
             "identidade_atual = :identidade_atual, "
-            "identidade = :i, origem = :o, chat_id = :c"
+            "identidade = :i, origem = :o, destinatarios = :d"
         )
         if pedido.estado.terminal:
             expressao += " REMOVE pendencia, processar_em"
@@ -207,8 +217,14 @@ class RepositorioDePedidosDynamo:
         except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
             raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
+    @staticmethod
+    def _chave_da_parte(destinatario: int, indice: int) -> str:
+        """v2: a mesma parte pode ter desfechos diferentes por destinatário,
+        então o destinatário faz parte da chave — não só o índice."""
+        return f"parte#{destinatario}#{indice:03d}"
+
     def registrar_intencao_parte(
-        self, pedido: str, indice: int, texto: str, instante: datetime
+        self, pedido: str, destinatario: int, indice: int, texto: str, instante: datetime
     ) -> None:
         """Registra a intenção de enviar uma parte antes do envio externo.
 
@@ -218,9 +234,10 @@ class RepositorioDePedidosDynamo:
         self.tabela.put_item(
             Item={
                 "pk": self.chave_do_pedido(pedido),
-                "sk": f"parte#{indice:03d}",
+                "sk": self._chave_da_parte(destinatario, indice),
                 "indice": indice,
-                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "destinatario": destinatario,
+                "identidade": Pedido.identidade_de_parte(pedido, destinatario, indice),
                 "texto": texto,
                 "estado": "intencao",
                 "intencao_em": em_utc(instante).isoformat(timespec="microseconds"),
@@ -230,6 +247,7 @@ class RepositorioDePedidosDynamo:
     def confirmar_parte(
         self,
         pedido: str,
+        destinatario: int,
         indice: int,
         texto: str,
         message_id: int,
@@ -245,9 +263,10 @@ class RepositorioDePedidosDynamo:
         """
         item = {
             "pk": self.chave_do_pedido(pedido),
-            "sk": f"parte#{indice:03d}",
+            "sk": self._chave_da_parte(destinatario, indice),
             "indice": indice,
-            "identidade": Pedido.identidade_de_parte(pedido, indice),
+            "destinatario": destinatario,
+            "identidade": Pedido.identidade_de_parte(pedido, destinatario, indice),
             "texto": texto,
             "message_id": message_id,
             "estado": "confirmada",
@@ -277,7 +296,7 @@ class RepositorioDePedidosDynamo:
             raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
     def marcar_parte_incerta(
-        self, pedido: str, indice: int, motivo: str, instante: datetime
+        self, pedido: str, destinatario: int, indice: int, motivo: str, instante: datetime
     ) -> None:
         """Marca a parte como incerta para suspender reenvio automático.
 
@@ -288,35 +307,36 @@ class RepositorioDePedidosDynamo:
         self.tabela.put_item(
             Item={
                 "pk": self.chave_do_pedido(pedido),
-                "sk": f"parte#{indice:03d}",
+                "sk": self._chave_da_parte(destinatario, indice),
                 "indice": indice,
-                "identidade": Pedido.identidade_de_parte(pedido, indice),
+                "destinatario": destinatario,
+                "identidade": Pedido.identidade_de_parte(pedido, destinatario, indice),
                 "estado": "incerto",
                 "motivo": motivo,
                 "incerta_em": em_utc(instante).isoformat(timespec="microseconds"),
             }
         )
 
-    def indices_confirmados(self, pedido: str) -> set[int]:
+    def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") != "incerto"
             and item.get("estado") != "intencao"
             and item.get("message_id") not in (None, 0)
         }
 
-    def indices_incertos(self, pedido: str) -> set[int]:
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") == "incerto"
         }
 
-    def indices_intencoes(self, pedido: str) -> set[int]:
+    def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") == "intencao"
         }
 

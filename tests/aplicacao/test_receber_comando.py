@@ -221,7 +221,7 @@ def test_frase_cria_pedido_extra_e_acorda_o_worker() -> None:
 
     assert desfecho is Desfecho.ACEITO
     assert pedidos.criados[0].identidade == "extra#principal#77"
-    assert pedidos.criados[0].chat_id == CHAT
+    assert pedidos.criados[0].destinatarios == (CHAT,)
     assert despachante.acordados == ["extra#principal#77"]
 
 
@@ -421,7 +421,7 @@ def test_frase_funciona_para_qualquer_destinatario_autorizado(chat_id: int) -> N
     )
 
     assert desfecho is Desfecho.ACEITO
-    assert pedidos.criados[0].chat_id == chat_id
+    assert pedidos.criados[0].destinatarios == (chat_id,)
     assert despachante.acordados == [f"extra#principal#{chat_id}"]
 
 

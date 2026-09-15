@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import ClassVar, Protocol
 
 from frase_diaria.aplicacao.diagnostico import erro_sanitizado
@@ -24,11 +25,12 @@ class RepositorioDePedidos(Protocol):
     ) -> None: ...
     def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None: ...
     def registrar_intencao_parte(
-        self, pedido: str, indice: int, texto: str, instante: datetime
+        self, pedido: str, destinatario: int, indice: int, texto: str, instante: datetime
     ) -> None: ...
     def confirmar_parte(
         self,
         pedido: str,
+        destinatario: int,
         indice: int,
         texto: str,
         message_id: int,
@@ -36,11 +38,11 @@ class RepositorioDePedidos(Protocol):
         sequencial: int | None = None,
     ) -> None: ...
     def marcar_parte_incerta(
-        self, pedido: str, indice: int, motivo: str, instante: datetime
+        self, pedido: str, destinatario: int, indice: int, motivo: str, instante: datetime
     ) -> None: ...
-    def indices_confirmados(self, pedido: str) -> set[int]: ...
-    def indices_incertos(self, pedido: str) -> set[int]: ...
-    def indices_intencoes(self, pedido: str) -> set[int]: ...
+    def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]: ...
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]: ...
+    def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]: ...
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: datetime
     ) -> int: ...
@@ -80,6 +82,35 @@ class CanalDeEnvio(Protocol):
     def enviar_texto(self, chat_id: int, texto: str) -> int:
         """Envia e devolve o message_id atribuído pelo Telegram."""
         ...
+
+
+class _DesfechoDoDestinatario(Enum):
+    """O que aconteceu ao tentar entregar a frase a UM destinatário.
+
+    Isolado por construção: o desfecho de um destinatário nunca depende do
+    desfecho de outro. `_entregar` (abaixo) decide o estado agregado do
+    pedido só depois de tentar todos, exatamente para que uma falha
+    permanente num destinatário não impeça a tentativa aos demais (spec v2,
+    `.scratch/v2-telegram-bot.md`).
+    """
+
+    CONCLUIDO = "concluido"
+    INCERTO = "incerto"
+    FALHOU = "falhou"
+    AGUARDANDO = "aguardando"
+    JANELA_ESGOTADA = "janela_esgotada"
+
+
+@dataclass(frozen=True)
+class _ResultadoDoDestinatario:
+    desfecho: _DesfechoDoDestinatario
+    motivo: str
+    proxima_tentativa: datetime | None = None
+    # Se este destinatário já tem, agora, pelo menos uma parte confirmada —
+    # calculado uma única vez aqui dentro, para `_entregar` não precisar
+    # reconsultar o repositório por destinatário só para decidir se a frase
+    # fica consumida-com-ressalva ou é liberada (achado do code-review).
+    confirmou_algo: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,7 +307,7 @@ class ProcessarPedido:
             frase = por_identidade.get(pedido.frase_reservada)
             if frase is not None:
                 return frase, ciclo
-            if self.repositorio.indices_confirmados(pedido.identidade):
+            if self._algum_destinatario_confirmou(pedido):
                 return SemFrase.COLECAO_VAZIA
             if pedido.frase_reservada in ciclo.reservadas:
                 ciclo = ciclo.liberar(pedido.frase_reservada)
@@ -286,6 +317,20 @@ class ProcessarPedido:
             return escolha
         identidade, ciclo = escolha
         return por_identidade[identidade], ciclo
+
+    def _algum_destinatario_confirmou(self, pedido: Pedido) -> bool:
+        """Se a frase já chegou, confirmada, a pelo menos um destinatário.
+
+        É o que decide se a frase fica consumida-com-ressalva (nunca mais
+        reoferecida, para não duplicar a quem já recebeu) ou é liberada de
+        volta ao ciclo (nada confirmado a ninguém ainda). Generaliza o que
+        antes da v2 era "esta única conversa recebeu alguma parte" — agora é
+        "algum destinatário deste pedido recebeu alguma parte" (spec v2).
+        """
+        return any(
+            self.repositorio.indices_confirmados(pedido.identidade, destinatario)
+            for destinatario in pedido.destinatarios
+        )
 
     def _encerrar_por_janela_esgotada(
         self, pedido: Pedido, ciclo: Ciclo, versao_ciclo: int, sequencial: int
@@ -298,7 +343,7 @@ class ProcessarPedido:
         qualquer outra entrega incompleta (spec, 4.4; AC14).
         """
         motivo = "janela de recuperação encerrada"
-        alguma_enviada = bool(self.repositorio.indices_confirmados(pedido.identidade))
+        alguma_enviada = self._algum_destinatario_confirmou(pedido)
         encerrado = (
             pedido.falhar(alguma_parte_enviada=True, motivo=motivo)
             if alguma_enviada
@@ -318,7 +363,7 @@ class ProcessarPedido:
         invariante: quem já entregou alguma parte mantém a frase consumida, ainda
         que ela tenha desaparecido da fonte.
         """
-        ja_entregou = bool(self.repositorio.indices_confirmados(pedido.identidade))
+        ja_entregou = self._algum_destinatario_confirmou(pedido)
         motivo = (
             "frase reservada não está mais na coleção"
             if pedido.frase_reservada is not None
@@ -409,11 +454,95 @@ class ProcessarPedido:
     def _entregar(
         self, pedido: Pedido, frase: Frase, ciclo: Ciclo, versao_ciclo: int, sequencial: int
     ) -> Pedido:
-        ja_confirmadas = self.repositorio.indices_confirmados(pedido.identidade)
-        ja_incertas: set[int] = getattr(self.repositorio, "indices_incertos", lambda *_: set())(
-            pedido.identidade
+        """Entrega a frase a cada destinatário, isoladamente.
+
+        Todos os destinatários são tentados nesta passada — mesmo que um já
+        tenha um desfecho ruim — porque a falha de um não pode custar a
+        entrega aos demais (spec v2). A única exceção é a janela esgotada:
+        um prazo vencido interrompe a passada imediatamente, porque não faz
+        sentido tentar mais ninguém depois do prazo. O estado agregado do
+        pedido só é decidido depois de ver todos os desfechos, na ordem
+        janela > aguardando > incerto > falhou > concluído — a pior notícia
+        entre os destinatários é o que controla se o pedido retenta.
+        """
+        varios_destinatarios = len(pedido.destinatarios) > 1
+        resultados: list[tuple[int, _ResultadoDoDestinatario]] = []
+        for destinatario in pedido.destinatarios:
+            resultado = self._entregar_a_destinatario(pedido, destinatario, frase, sequencial)
+            resultados.append((destinatario, resultado))
+            if resultado.desfecho is _DesfechoDoDestinatario.JANELA_ESGOTADA:
+                break
+
+        def _motivo_agregado() -> str:
+            """Junta o motivo de TODO destinatário com desfecho ruim nesta
+            passada — não só do que decidiu o estado final. Sem isto, o
+            motivo de um destinatário que falhou permanentemente desaparece
+            para sempre quando outro, no mesmo instante, fica incerto ou
+            aguardando (achado do code-review): a prioridade abaixo decide
+            o que o PEDIDO faz a seguir, não o que fica registrado.
+            """
+            problematicos = [
+                (d, r) for d, r in resultados if r.desfecho is not _DesfechoDoDestinatario.CONCLUIDO
+            ]
+            if not varios_destinatarios:
+                return problematicos[0][1].motivo if problematicos else ""
+            return "; ".join(
+                f"{resultado.motivo} (destinatário {destinatario})"
+                for destinatario, resultado in problematicos
+            )
+
+        if any(r.desfecho is _DesfechoDoDestinatario.JANELA_ESGOTADA for _, r in resultados):
+            return self._encerrar_por_janela_esgotada(pedido, ciclo, versao_ciclo, sequencial)
+
+        aguardando = [r for _, r in resultados if r.desfecho is _DesfechoDoDestinatario.AGUARDANDO]
+        if aguardando:
+            # O instante mais tardio entre os que aguardam — não o primeiro do
+            # tuple: esperar pouco de menos faria a próxima tentativa bater de
+            # novo no retry_after de outro destinatário mais exigente (achado
+            # do code-review; spec, AC13).
+            proximas = [r.proxima_tentativa for r in aguardando if r.proxima_tentativa is not None]
+            return self._reagendar_apos_falha_transitoria(
+                pedido, _motivo_agregado(), sequencial, max(proximas)
+            )
+
+        alguma_enviada = any(resultado.confirmou_algo for _, resultado in resultados)
+
+        if any(r.desfecho is _DesfechoDoDestinatario.INCERTO for _, r in resultados):
+            return self._marcar_incerto(
+                pedido, _motivo_agregado(), alguma_enviada, ciclo, versao_ciclo, sequencial
+            )
+
+        if any(r.desfecho is _DesfechoDoDestinatario.FALHOU for _, r in resultados):
+            return self._encerrar_com_falha(
+                pedido, _motivo_agregado(), alguma_enviada, ciclo, versao_ciclo, sequencial
+            )
+
+        # Todos os destinatários concluíram: consumo definitivo, uma única vez,
+        # independentemente de quantos destinatários o pedido tinha.
+        concluido = pedido.concluir()
+        self.repositorio.salvar(concluido, sequencial)
+        self._consumir_no_ciclo(ciclo, versao_ciclo, frase.identidade, com_ressalva=False)
+        return concluido
+
+    def _entregar_a_destinatario(
+        self, pedido: Pedido, destinatario: int, frase: Frase, sequencial: int
+    ) -> _ResultadoDoDestinatario:
+        """Tenta entregar as partes ainda pendentes a UM destinatário.
+
+        Mesma lógica de sempre (checar prazo por parte, respeitar intenção
+        já registrada, distinguir erro transitório de permanente) — só que
+        devolve o desfecho em vez de decidir o estado do pedido, para que
+        `_entregar` possa combinar o resultado de vários destinatários antes
+        de decidir.
+        """
+        ja_confirmadas = self.repositorio.indices_confirmados(pedido.identidade, destinatario)
+        ja_incertas: set[int] = getattr(self.repositorio, "indices_incertos", lambda *_a: set())(
+            pedido.identidade, destinatario
         )
-        alguma_enviada = bool(ja_confirmadas)
+        # Calculado uma única vez aqui — `_entregar` usa isto para decidir
+        # consumo-com-ressalva vs. liberação, sem reconsultar o repositório
+        # por destinatário (achado do code-review).
+        confirmou_algo = bool(ja_confirmadas)
 
         for indice, texto in enumerate(frase.partes):
             if indice in ja_confirmadas or indice in ja_incertas:
@@ -422,59 +551,75 @@ class ProcessarPedido:
             # vez só por execução: uma frase de várias partes pode atravessar o
             # prazo no meio do envio (spec, 4.5; AC14).
             if pedido.prazo is not None and self.relogio.agora() > pedido.prazo:
-                return self._encerrar_por_janela_esgotada(pedido, ciclo, versao_ciclo, sequencial)
+                return _ResultadoDoDestinatario(
+                    _DesfechoDoDestinatario.JANELA_ESGOTADA,
+                    "janela de recuperação encerrada",
+                    confirmou_algo=confirmou_algo,
+                )
             indices_intencoes: set[int] = getattr(
-                self.repositorio, "indices_intencoes", lambda *_: set()
-            )(pedido.identidade)
+                self.repositorio, "indices_intencoes", lambda *_a: set()
+            )(pedido.identidade, destinatario)
             if indice in indices_intencoes:
                 motivo = "intenção registrada sem confirmação; reenvio automático suspenso"
-                return self._marcar_incerto(
-                    pedido, motivo, alguma_enviada, ciclo, versao_ciclo, sequencial
+                return _ResultadoDoDestinatario(
+                    _DesfechoDoDestinatario.INCERTO, motivo, confirmou_algo=confirmou_algo
                 )
             registrar_intencao = getattr(self.repositorio, "registrar_intencao_parte", None)
             if registrar_intencao is not None:
-                registrar_intencao(pedido.identidade, indice, texto, self.relogio.agora())
+                registrar_intencao(
+                    pedido.identidade, destinatario, indice, texto, self.relogio.agora()
+                )
             try:
-                message_id = self.canal.enviar_texto(pedido.chat_id, texto)
+                message_id = self.canal.enviar_texto(destinatario, texto)
             except ErroDoTelegram as erro:
                 # A mensagem já vem sanitizada do canal: sem token, sem URL.
                 # Tentativa única (extra a partir do meio-dia local) não retenta
                 # nem diante de erro transitório — é a própria tentativa, não uma
-                # entre várias (spec, 4.5).
+                # entre várias (spec, 4.5). Extras têm sempre um único
+                # destinatário, então isto nunca interage com o fan-out.
                 if (
                     erro.transitorio
                     and not pedido.tentativa_unica
                     and (pedido.prazo is None or self.relogio.agora() < pedido.prazo)
                 ):
                     proximo = self._proximo_instante_de_tentativa(sequencial, erro.retry_after_s)
-                    return self._reagendar_apos_falha_transitoria(
-                        pedido, str(erro), sequencial, proximo
+                    return _ResultadoDoDestinatario(
+                        _DesfechoDoDestinatario.AGUARDANDO,
+                        str(erro),
+                        proximo,
+                        confirmou_algo=confirmou_algo,
                     )
-                return self._encerrar_com_falha(
-                    pedido, str(erro), alguma_enviada, ciclo, versao_ciclo, sequencial
+                return _ResultadoDoDestinatario(
+                    _DesfechoDoDestinatario.FALHOU, str(erro), confirmou_algo=confirmou_algo
                 )
             if message_id == MESSAGE_ID_DESCONHECIDO:
                 motivo = "Telegram pode ter aceitado a parte, mas não houve confirmação durável"
                 marcar_incerta = getattr(self.repositorio, "marcar_parte_incerta", None)
                 if marcar_incerta is not None:
-                    marcar_incerta(pedido.identidade, indice, motivo, self.relogio.agora())
-                return self._marcar_incerto(
-                    pedido, motivo, alguma_enviada, ciclo, versao_ciclo, sequencial
+                    marcar_incerta(
+                        pedido.identidade, destinatario, indice, motivo, self.relogio.agora()
+                    )
+                return _ResultadoDoDestinatario(
+                    _DesfechoDoDestinatario.INCERTO, motivo, confirmou_algo=confirmou_algo
                 )
             # Confirmação persistida com o texto efetivamente enviado: o histórico
             # preserva o que chegou, mesmo que a origem mude depois. A condição do
             # lease garante que um executor superado não confirma nada (AC03) —
             # `ConflitoDeConcorrencia` propaga até `executar`, que trata o caso.
             self.repositorio.confirmar_parte(
-                pedido.identidade, indice, texto, message_id, self.relogio.agora(), sequencial
+                pedido.identidade,
+                destinatario,
+                indice,
+                texto,
+                message_id,
+                self.relogio.agora(),
+                sequencial,
             )
-            alguma_enviada = True
+            confirmou_algo = True
 
-        concluido = pedido.concluir()
-        self.repositorio.salvar(concluido, sequencial)
-        # Consumo definitivo: todas as partes confirmadas.
-        self._consumir_no_ciclo(ciclo, versao_ciclo, frase.identidade, com_ressalva=False)
-        return concluido
+        return _ResultadoDoDestinatario(
+            _DesfechoDoDestinatario.CONCLUIDO, "", confirmou_algo=confirmou_algo
+        )
 
     def _proximo_instante_de_tentativa(
         self, sequencial: int, retry_after_s: float | None

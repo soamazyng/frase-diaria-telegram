@@ -79,11 +79,17 @@ MOTIVO_PADRAO = "pedido criado"
 
 @dataclass(frozen=True)
 class Pedido:
-    """Uma solicitação de envio, com identidade que sobrevive a reinícios."""
+    """Uma solicitação de envio, com identidade que sobrevive a reinícios.
+
+    `destinatarios` é quem recebe esta entrega: um extra tem exatamente um
+    (quem pediu); a diária carrega todos os destinatários autorizados,
+    compartilhando uma única reserva/consumo de frase no ciclo (spec v2,
+    `.scratch/v2-telegram-bot.md`).
+    """
 
     identidade: str
     origem: Origem
-    chat_id: int
+    destinatarios: tuple[int, ...]
     estado: EstadoDoPedido = EstadoDoPedido.PENDENTE
     frase_reservada: str | None = None
     motivo_do_estado: str = MOTIVO_PADRAO
@@ -99,6 +105,10 @@ class Pedido:
     # posterior à criação, e um prazo próximo dela seria ultrapassado antes da
     # própria tentativa única rodar.
     tentativa_unica: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.destinatarios:
+            raise ValueError("pedido precisa de ao menos um destinatário")
 
     @property
     def estado_legado(self) -> str:
@@ -119,9 +129,15 @@ class Pedido:
         return f"extra#{bot}#{update_id}"
 
     @staticmethod
-    def identidade_de_diaria(chat_id: int, dia: date) -> str:
-        """Identidade de uma diária: conversa autorizada mais data local."""
-        return f"diaria#{chat_id}#{dia.isoformat()}"
+    def identidade_de_diaria(dia: date) -> str:
+        """Identidade de uma diária: um único pedido por dia local.
+
+        Até a v1, incluía o chat_id (`diaria#<chat_id>#<dia>`) — a v2 entrega a
+        mesma frase a todos os destinatários autorizados a partir de um único
+        pedido, então o chat_id deixou de fazer parte da identidade. Identidades
+        no formato antigo permanecem como histórico, sem serem reprocessadas.
+        """
+        return f"diaria#{dia.isoformat()}"
 
     def dia_alvo_da_diaria(self) -> date | None:
         """O dia local que esta diária alvejava, ou `None` para um extra.
@@ -135,9 +151,16 @@ class Pedido:
         return date.fromisoformat(self.identidade.rsplit("#", 1)[-1])
 
     @staticmethod
-    def identidade_de_parte(pedido: str, indice: int) -> str:
-        """Identidade de uma parte dentro de seu pedido."""
-        return f"{pedido}#parte#{indice}"
+    def identidade_de_parte(pedido: str, destinatario: int, indice: int) -> str:
+        """Identidade de uma parte: pedido, destinatário e índice.
+
+        Até a v1 era só pedido + índice — um pedido tinha um único
+        destinatário. A partir da v2, a mesma parte de um pedido compartilhado
+        pode ter desfechos diferentes por destinatário (confirmada para um,
+        incerta para outro), então o destinatário passa a fazer parte da
+        identidade (spec v2, `.scratch/v2-telegram-bot.md`).
+        """
+        return f"{pedido}#dest#{destinatario}#parte#{indice}"
 
     @staticmethod
     def identidade_de_tentativa(pedido: str, sequencial: int) -> str:

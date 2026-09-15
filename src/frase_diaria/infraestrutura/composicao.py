@@ -113,11 +113,15 @@ def montar_receber_comando() -> ReceberComando:
 
 
 def montar_criar_diaria() -> CriarDiaria:
-    """Materializa o pedido diário — chamada pelo agendador e pelo reconciliador."""
+    """Materializa o pedido diário — chamada pelo agendador e pelo reconciliador.
+
+    Lê `telegram-chat-ids` (v2): o mesmo conjunto de destinatários autorizados
+    do webhook recebe a diária, com uma única reserva/consumo de frase.
+    """
     guardados = segredos()
     return CriarDiaria(
         pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=_bot_legado(guardados)),
-        chat_id=int(guardados["telegram-chat-id"]),
+        destinatarios=tuple(_destinatarios_autorizados(guardados)),
     )
 
 

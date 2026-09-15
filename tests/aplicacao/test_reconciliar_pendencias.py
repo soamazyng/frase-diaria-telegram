@@ -55,7 +55,7 @@ class DiariaEspiao:
 
 
 def _pedido(identidade: str) -> Pedido:
-    return Pedido(identidade=identidade, origem=Origem.EXTRA, chat_id=672024065)
+    return Pedido(identidade=identidade, origem=Origem.EXTRA, destinatarios=(672024065,))
 
 
 def _reconciliador(

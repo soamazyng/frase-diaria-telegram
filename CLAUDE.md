@@ -55,10 +55,11 @@ leitura de comentários é opcional e não está habilitada) e `notion-pagina-id
 (aceita o id puro ou a URL completa da
 página, com o título como prefixo — o cliente normaliza).
 
-**Migração em andamento (v2):** o disparo agendado da diária ainda lê o
-parâmetro singular antigo `telegram-chat-id`, não `telegram-chat-ids` — só o
-ticket 25 migra a diária para múltiplos destinatários. O parâmetro antigo só
-deve ser removido depois que o ticket 27 confirmar a migração em produção.
+**Migração concluída no código (v2, ticket 25):** tanto o webhook quanto o
+disparo agendado da diária já leem só `telegram-chat-ids`. O parâmetro antigo
+`telegram-chat-id` (singular) não é mais lido por nada no código — ele só
+continua existindo no SSM até o ticket 27 confirmar a migração em produção e
+autorizar removê-lo; até lá, não é necessário para a operação.
 
 Manuseio de segredos, cache por container e depuração do webhook: `rules.md`.
 
@@ -119,7 +120,7 @@ Estas regras são a razão de a spec existir; violá-las quebra o produto de for
 - Um reconciliador periódico (proposta: 5 min) recupera pendentes e pode criar a diária ausente dentro da janela; a chave diária torna as duas entradas idempotentes.
 
 **Idempotência**
-- Diária = conversa autorizada + data local · Extra = bot + `update_id` · Parte = pedido + índice · Tentativa = pedido + sequencial.
+- Diária = data local (v2: um único pedido para todo o conjunto de destinatários, não mais por conversa) · Extra = bot + `update_id` · Parte = pedido + destinatário + índice (v2) · Tentativa = pedido + sequencial.
 - Reserva de pedido e de frase usam escritas condicionais e transações; ciclo e sequência de envio protegidos por **lease com prazo + token de versão**, para que um executor antigo não confirme nem avance uma reserva já transferida.
 - Banco e chamada ao Telegram não estão na mesma transação. A spec **não promete** entrega exatamente uma vez sob falha ambígua: registrar intenção por parte antes do envio e, em resultado ambíguo, marcar *incerto* e **suspender reenvio automático** dessa parte.
 - Estados terminais não são reabertos por evento duplicado.

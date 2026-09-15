@@ -27,16 +27,16 @@ class RelogioFixo:
 class RepositorioFalso:
     def __init__(self, pedidos: dict[str, Pedido] | None = None) -> None:
         self._pedidos = pedidos or {}
-        self._incertas: dict[str, set[int]] = {}
+        self._incertas: dict[tuple[str, int], set[int]] = {}
 
     def obter(self, identidade: str) -> Pedido | None:
         return self._pedidos.get(identidade)
 
-    def marcar_incerta(self, identidade: str, indice: int) -> None:
-        self._incertas.setdefault(identidade, set()).add(indice)
+    def marcar_incerta(self, identidade: str, destinatario: int, indice: int) -> None:
+        self._incertas.setdefault((identidade, destinatario), set()).add(indice)
 
-    def indices_incertos(self, identidade: str) -> set[int]:
-        return self._incertas.get(identidade, set())
+    def indices_incertos(self, identidade: str, destinatario: int) -> set[int]:
+        return self._incertas.get((identidade, destinatario), set())
 
 
 class ColecaoFalsa:
@@ -76,7 +76,7 @@ def _consultar(repositorio: Any, colecao: Any = None) -> ConsultarStatus:
 
 def _diaria(dia: date, estado_final: str | None = None) -> Pedido:
     pedido = Pedido(
-        identidade=Pedido.identidade_de_diaria(CHAT, dia), origem=Origem.DIARIA, chat_id=CHAT
+        identidade=Pedido.identidade_de_diaria(dia), origem=Origem.DIARIA, destinatarios=(CHAT,)
     )
     if estado_final == "enviado":
         return pedido.reservar("bloco-1").iniciar_envio().concluir()
@@ -106,7 +106,7 @@ def test_diaria_de_hoje_ausente() -> None:
 
 
 def test_diaria_de_hoje_pendente() -> None:
-    identidade = Pedido.identidade_de_diaria(CHAT, HOJE)
+    identidade = Pedido.identidade_de_diaria(HOJE)
     repositorio = RepositorioFalso({identidade: _diaria(HOJE)})
 
     relatorio = _consultar(repositorio).executar()
@@ -116,7 +116,7 @@ def test_diaria_de_hoje_pendente() -> None:
 
 
 def test_diaria_de_hoje_com_partes_incertas() -> None:
-    identidade = Pedido.identidade_de_diaria(CHAT, HOJE)
+    identidade = Pedido.identidade_de_diaria(HOJE)
     diaria = (
         _diaria(HOJE)
         .reservar("bloco-1")
@@ -124,7 +124,7 @@ def test_diaria_de_hoje_com_partes_incertas() -> None:
         .marcar_incerto("Telegram pode ter aceitado")
     )
     repositorio = RepositorioFalso({identidade: diaria})
-    repositorio.marcar_incerta(identidade, 0)
+    repositorio.marcar_incerta(identidade, CHAT, 0)
 
     relatorio = _consultar(repositorio).executar()
 
@@ -135,7 +135,7 @@ def test_diaria_de_hoje_com_partes_incertas() -> None:
 
 
 def test_ultimo_envio_e_a_diaria_de_hoje_quando_ja_entregue() -> None:
-    identidade = Pedido.identidade_de_diaria(CHAT, HOJE)
+    identidade = Pedido.identidade_de_diaria(HOJE)
     repositorio = RepositorioFalso({identidade: _diaria(HOJE, "enviado")})
 
     relatorio = _consultar(repositorio).executar()
@@ -149,8 +149,8 @@ def test_ultimo_envio_recua_para_ontem_quando_hoje_falhou() -> None:
     ontem = HOJE - timedelta(days=1)
     repositorio = RepositorioFalso(
         {
-            Pedido.identidade_de_diaria(CHAT, HOJE): _diaria(HOJE, "falhou"),
-            Pedido.identidade_de_diaria(CHAT, ontem): _diaria(ontem, "parcial"),
+            Pedido.identidade_de_diaria(HOJE): _diaria(HOJE, "falhou"),
+            Pedido.identidade_de_diaria(ontem): _diaria(ontem, "parcial"),
         }
     )
 
@@ -163,9 +163,7 @@ def test_ultimo_envio_recua_para_ontem_quando_hoje_falhou() -> None:
 
 def test_ultimo_envio_recua_para_ontem_quando_hoje_ainda_nao_existe() -> None:
     ontem = HOJE - timedelta(days=1)
-    repositorio = RepositorioFalso(
-        {Pedido.identidade_de_diaria(CHAT, ontem): _diaria(ontem, "enviado")}
-    )
+    repositorio = RepositorioFalso({Pedido.identidade_de_diaria(ontem): _diaria(ontem, "enviado")})
 
     relatorio = _consultar(repositorio).executar()
 
@@ -173,12 +171,26 @@ def test_ultimo_envio_recua_para_ontem_quando_hoje_ainda_nao_existe() -> None:
     assert relatorio.ultimo_envio.dia == ontem
 
 
+def test_ultimo_envio_de_ontem_no_formato_anterior_a_v2_ainda_e_encontrado() -> None:
+    """Achado do code-review: no dia da publicação da v2, a diária de ontem
+    ainda está gravada como `diaria#<chat_id>#<dia>` (formato anterior)."""
+    ontem = HOJE - timedelta(days=1)
+    diaria_no_formato_antigo = _diaria(ontem, "enviado")
+    repositorio = RepositorioFalso({f"diaria#{CHAT}#{ontem.isoformat()}": diaria_no_formato_antigo})
+
+    relatorio = _consultar(repositorio).executar()
+
+    assert relatorio.ultimo_envio is not None
+    assert relatorio.ultimo_envio.dia == ontem
+    assert relatorio.ultimo_envio.estado is EstadoDoPedido.ENVIADO
+
+
 def test_ultimo_envio_e_none_quando_nem_hoje_nem_ontem_foram_entregues() -> None:
     ontem = HOJE - timedelta(days=1)
     repositorio = RepositorioFalso(
         {
-            Pedido.identidade_de_diaria(CHAT, HOJE): _diaria(HOJE, "falhou"),
-            Pedido.identidade_de_diaria(CHAT, ontem): _diaria(ontem, "falhou"),
+            Pedido.identidade_de_diaria(HOJE): _diaria(HOJE, "falhou"),
+            Pedido.identidade_de_diaria(ontem): _diaria(ontem, "falhou"),
         }
     )
 
@@ -197,7 +209,7 @@ def test_proxima_ocorrencia_e_hoje_quando_a_diaria_de_hoje_nao_terminou() -> Non
 
 
 def test_proxima_ocorrencia_e_amanha_quando_a_diaria_de_hoje_ja_terminou() -> None:
-    identidade = Pedido.identidade_de_diaria(CHAT, HOJE)
+    identidade = Pedido.identidade_de_diaria(HOJE)
     repositorio = RepositorioFalso({identidade: _diaria(HOJE, "enviado")})
 
     relatorio = _consultar(repositorio).executar()

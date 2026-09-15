@@ -156,7 +156,7 @@ class ReceberComando:
         pedido = Pedido(
             identidade=Pedido.identidade_de_extra(self.bot, update_id),
             origem=Origem.EXTRA,
-            chat_id=chat_id,
+            destinatarios=(chat_id,),
             prazo=politica.prazo,
             tentativa_unica=politica.tentativa_unica,
         )

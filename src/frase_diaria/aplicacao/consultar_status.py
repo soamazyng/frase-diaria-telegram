@@ -17,7 +17,7 @@ from frase_diaria.telegram.status import formatar_status
 
 class RepositorioDePedidosStatus(Protocol):
     def obter(self, identidade: str) -> Pedido | None: ...
-    def indices_incertos(self, pedido: str) -> set[int]: ...
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]: ...
 
 
 class RepositorioDeColecaoStatus(Protocol):
@@ -65,7 +65,19 @@ class ConsultarStatus:
         )
 
     def _diaria_de(self, dia: date) -> Pedido | None:
-        return self.repositorio.obter(Pedido.identidade_de_diaria(self.chat_id, dia))
+        # v2: um único pedido diário para todos os destinatários — a busca não
+        # é mais por chat_id, mas o "incerto" abaixo continua sendo o do
+        # destinatário que perguntou (self.chat_id), não um agregado de todos.
+        pedido = self.repositorio.obter(Pedido.identidade_de_diaria(dia))
+        if pedido is not None:
+            return pedido
+        # Transição (achado do code-review): no dia em que a v2 é publicada, a
+        # diária de ONTEM ainda está gravada no formato anterior à v2
+        # (`diaria#<chat_id>#<dia>`), que este destinatário já usava. Sem este
+        # fallback, `/status` relataria "nunca enviado" para um dia que na
+        # verdade entregou — um só dia de imprecisão de leitura, não de dado
+        # perdido. Pode ser removido depois que essa janela de transição passar.
+        return self.repositorio.obter(f"diaria#{self.chat_id}#{dia.isoformat()}")
 
     def _situacao(self, pedido: Pedido | None) -> SituacaoDaDiaria:
         if pedido is None:
@@ -76,7 +88,9 @@ class ConsultarStatus:
             existe=True,
             estado=pedido.estado,
             motivo=pedido.motivo_do_estado,
-            tem_partes_incertas=bool(self.repositorio.indices_incertos(pedido.identidade)),
+            tem_partes_incertas=bool(
+                self.repositorio.indices_incertos(pedido.identidade, self.chat_id)
+            ),
         )
 
     def _ultimo_envio(self, pedido_hoje: Pedido | None, dia_hoje: date) -> UltimoEnvio | None:
@@ -96,7 +110,9 @@ class ConsultarStatus:
         return UltimoEnvio(
             dia=dia,
             estado=pedido.estado,
-            tem_partes_incertas=bool(self.repositorio.indices_incertos(pedido.identidade)),
+            tem_partes_incertas=bool(
+                self.repositorio.indices_incertos(pedido.identidade, self.chat_id)
+            ),
         )
 
     def _sincronizacao(self) -> SituacaoDaSincronizacao:

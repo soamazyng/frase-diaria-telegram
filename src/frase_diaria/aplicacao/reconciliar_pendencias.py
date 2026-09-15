@@ -48,8 +48,9 @@ class ReconciliarPendencias:
             try:
                 self.diaria.executar(agora)
             except Exception:
-                # A idempotência é por identidade (conversa + dia local): a
-                # próxima varredura, cinco minutos depois, tenta de novo.
+                # A idempotência é por identidade (dia local — v2: um único
+                # pedido para todos os destinatários, não mais por conversa):
+                # a próxima varredura, cinco minutos depois, tenta de novo.
                 _log.exception(
                     "falha ao materializar a diária ausente; próxima varredura tenta de novo"
                 )
