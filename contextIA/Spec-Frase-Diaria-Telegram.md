@@ -42,6 +42,7 @@ A usuária pode pedir outra frase com /frase e consultar a operação com /statu
 - **Entrega incerta:** a chamada pode ter produzido mensagem, mas não há confirmação durável.
 - **Versão estável:** publicação verificada e aceita por merge.
 - **Versão candidata:** publicação de um PR ainda aberto.
+- **Destinatário** (v2): uma conversa privada autorizada a receber entregas do bot. Até a v2 existia exatamente um; a partir da v2 existe um conjunto pequeno e fixo, configurado pela usuária. "Conversa autorizada", usado no restante desta spec, passa a significar "pertence ao conjunto de destinatários autorizados", não mais "é o único chat_id configurado". Ver `.scratch/v2-telegram-bot.md`.
 
 ## 3. Histórias de usuário — User Stories
 
@@ -312,11 +313,20 @@ Complementar com testes de contrato nas fronteiras HTTP e de integração, e tes
 - AC30 — Documentação de operação permite configurar credenciais, diagnosticar falha e executar recuperação.
 - AC31 — Duas semanas de uso permitem a avaliação pessoal das duas frases de valor, sem exigir coleta automática.
 
+Critérios a seguir cobrem múltiplos destinatários (v2, `.scratch/v2-telegram-bot.md`):
+
+- AC32 — Com múltiplos destinatários configurados, uma mesma diária entrega texto idêntico, vindo de um único sorteio, a todos eles.
+- AC33 — Falha permanente de entrega a um destinatário não impede, atrasa nem encerra a entrega aos demais destinatários do mesmo pedido.
+- AC34 — Uma frase entregue a vários destinatários no mesmo pedido é consumida uma única vez no ciclo, nunca uma vez por destinatário.
+- AC35 — `/status` de cada destinatário reflete a entrega dele mesmo (confirmada, incerta, parcial ou falha), independentemente do resultado dos demais destinatários no mesmo pedido.
+- AC36 — Um destinatário autorizado adicional usa `/frase` e `/status` com o mesmo comportamento e autenticação que o destinatário original.
+- AC37 — Um chat_id fora do conjunto configurado de destinatários continua sem resposta e sem pedido, independentemente de quantos destinatários existam.
+
 A suíte de CI usa fixtures e integrações simuladas para resultados reproduzíveis. Testes específicos de persistência validam atomicidade, retomada e concorrência. O aceite AWS inclui uma entrega real autorizada, /frase, /status, persistência entre versões e exercício controlado de recuperação. Não criar um ambiente permanente de dev.
 
 ## 6. Fora do escopo — Out of Scope
 
-- Múltiplos usuários, grupos e canais públicos.
+- Múltiplos usuários além de um conjunto pequeno e fixo de destinatários privados, nomeados pela usuária (v2, `.scratch/v2-telegram-bot.md`); grupos e canais públicos continuam fora de escopo, assim como destinatários dinâmicos ou autoinscrição por interação no bot.
 - Interface administrativa, dashboard web e aplicativo próprio.
 - IA para gerar, comentar, corrigir autoria ou recomendar frases durante a operação.
 - Filtros por tema, favoritas, avaliações, resumos semanais ou horários por dia.
