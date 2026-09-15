@@ -16,7 +16,11 @@ from frase_diaria.dominio.tempo import politica_do_extra
 
 SEGREDO = "segredo-certo"
 CHAT = 8340090374
-POLITICA = PoliticaDeAcesso(segredo_esperado=SEGREDO, chat_id_autorizado=CHAT)
+CHAT_DO_IRMAO = 111222333
+POLITICA = PoliticaDeAcesso(segredo_esperado=SEGREDO, chat_ids_autorizados=frozenset({CHAT}))
+POLITICA_COM_DOIS_DESTINATARIOS = PoliticaDeAcesso(
+    segredo_esperado=SEGREDO, chat_ids_autorizados=frozenset({CHAT, CHAT_DO_IRMAO})
+)
 
 
 class RelogioFixo:
@@ -394,6 +398,71 @@ def test_status_repetido_nao_pede_o_relatorio_de_novo() -> None:
 
     assert desfecho is Desfecho.JA_CONHECIDO
     assert despachante.pedidos_de_status == [CHAT]
+
+
+# --- múltiplos destinatários (ticket 24) -------------------------------------
+
+
+@pytest.mark.parametrize("chat_id", [CHAT, CHAT_DO_IRMAO])
+def test_frase_funciona_para_qualquer_destinatario_autorizado(chat_id: int) -> None:
+    """AC36: um segundo destinatário autorizado usa /frase como qualquer outro."""
+    pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
+    caso = ReceberComando(
+        politica=POLITICA_COM_DOIS_DESTINATARIOS,
+        repositorio=RepositorioEmMemoria(),
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=pedidos,
+        despachante=despachante,
+    )
+
+    desfecho = caso.executar(
+        segredo=SEGREDO, corpo=_mensagem("/frase", chat_id=chat_id, update_id=chat_id)
+    )
+
+    assert desfecho is Desfecho.ACEITO
+    assert pedidos.criados[0].chat_id == chat_id
+    assert despachante.acordados == [f"extra#principal#{chat_id}"]
+
+
+@pytest.mark.parametrize("chat_id", [CHAT, CHAT_DO_IRMAO])
+def test_status_funciona_para_qualquer_destinatario_autorizado(chat_id: int) -> None:
+    """AC36: um segundo destinatário autorizado usa /status como qualquer outro."""
+    despachante = DespachanteEspiao()
+    caso = ReceberComando(
+        politica=POLITICA_COM_DOIS_DESTINATARIOS,
+        repositorio=RepositorioEmMemoria(),
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=despachante,
+    )
+
+    desfecho = caso.executar(
+        segredo=SEGREDO, corpo=_mensagem("/status", chat_id=chat_id, update_id=chat_id)
+    )
+
+    assert desfecho is Desfecho.ACEITO
+    assert despachante.pedidos_de_status == [chat_id]
+
+
+def test_recusa_terceiro_chat_id_mesmo_com_dois_destinatarios_autorizados() -> None:
+    """AC37: ter mais de um destinatário autorizado não afrouxa a recusa dos demais."""
+    repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
+    caso = ReceberComando(
+        politica=POLITICA_COM_DOIS_DESTINATARIOS,
+        repositorio=repositorio,
+        canal=canal,
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=DespachanteEspiao(),
+    )
+
+    desfecho = caso.executar(segredo=SEGREDO, corpo=_mensagem(chat_id=999999))
+
+    assert desfecho is Desfecho.IGNORADO
+    assert repositorio.registrados == []
+    assert canal.enviados == []
 
 
 def test_falha_ao_pedir_status_nao_derruba_o_webhook() -> None:

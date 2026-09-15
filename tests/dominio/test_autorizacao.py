@@ -14,8 +14,14 @@ from frase_diaria.dominio.autorizacao import (
     Recusa,
 )
 
-POLITICA = PoliticaDeAcesso(segredo_esperado="segredo-certo", chat_id_autorizado=8340090374)
-CONVERSA_DA_USUARIA = Conversa(chat_id=8340090374, tipo="private")
+CHAT_DA_USUARIA = 8340090374
+CHAT_DO_IRMAO = 111222333
+POLITICA = PoliticaDeAcesso(
+    segredo_esperado="segredo-certo",
+    chat_ids_autorizados=frozenset({CHAT_DA_USUARIA, CHAT_DO_IRMAO}),
+)
+CONVERSA_DA_USUARIA = Conversa(chat_id=CHAT_DA_USUARIA, tipo="private")
+CONVERSA_DO_IRMAO = Conversa(chat_id=CHAT_DO_IRMAO, tipo="private")
 
 
 def test_aceita_a_conversa_privada_autorizada_com_o_segredo_certo() -> None:
@@ -33,14 +39,14 @@ def test_recusa_segredo_ausente() -> None:
 
 
 def test_recusa_conversa_de_grupo_mesmo_com_segredo_certo() -> None:
-    grupo = Conversa(chat_id=8340090374, tipo="group")
+    grupo = Conversa(chat_id=CHAT_DA_USUARIA, tipo="group")
 
     assert POLITICA.avaliar(segredo="segredo-certo", conversa=grupo) is Recusa.CONVERSA_NAO_PRIVADA
 
 
 @pytest.mark.parametrize("tipo", ["group", "supergroup", "channel"])
 def test_recusa_qualquer_tipo_que_nao_seja_privado(tipo: str) -> None:
-    conversa = Conversa(chat_id=8340090374, tipo=tipo)
+    conversa = Conversa(chat_id=CHAT_DA_USUARIA, tipo=tipo)
 
     recusa = POLITICA.avaliar(segredo="segredo-certo", conversa=conversa)
 
@@ -48,6 +54,18 @@ def test_recusa_qualquer_tipo_que_nao_seja_privado(tipo: str) -> None:
 
 
 def test_recusa_outro_chat_id_ainda_que_privado() -> None:
+    intrusa = Conversa(chat_id=999999, tipo="private")
+
+    assert POLITICA.avaliar(segredo="segredo-certo", conversa=intrusa) is Recusa.CHAT_NAO_AUTORIZADO
+
+
+def test_aceita_qualquer_destinatario_do_conjunto_autorizado() -> None:
+    """AC36: um segundo destinatário autorizado é aceito como qualquer outro."""
+    assert POLITICA.avaliar(segredo="segredo-certo", conversa=CONVERSA_DO_IRMAO) is None
+
+
+def test_recusa_chat_fora_do_conjunto_mesmo_com_dois_destinatarios_autorizados() -> None:
+    """AC37: ter mais de um destinatário autorizado não afrouxa a recusa dos demais."""
     intrusa = Conversa(chat_id=999999, tipo="private")
 
     assert POLITICA.avaliar(segredo="segredo-certo", conversa=intrusa) is Recusa.CHAT_NAO_AUTORIZADO
@@ -85,7 +103,7 @@ def test_conferir_segredo_nao_depende_do_corpo() -> None:
 def test_conferir_conversa_avalia_origem_e_destinatario() -> None:
     assert POLITICA.conferir_conversa(CONVERSA_DA_USUARIA) is None
     assert (
-        POLITICA.conferir_conversa(Conversa(chat_id=8340090374, tipo="group"))
+        POLITICA.conferir_conversa(Conversa(chat_id=CHAT_DA_USUARIA, tipo="group"))
         is Recusa.CONVERSA_NAO_PRIVADA
     )
     assert (

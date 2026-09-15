@@ -25,11 +25,13 @@ class Conversa:
 class PoliticaDeAcesso:
     """Quem pode falar com o bot.
 
-    O bot é de usuária única: uma conversa privada, um chat_id.
+    O bot é privado a um conjunto pequeno e fixo de destinatários: cada um é uma
+    conversa privada, identificada pelo próprio chat_id (spec v2,
+    `.scratch/v2-telegram-bot.md`).
     """
 
     segredo_esperado: str
-    chat_id_autorizado: int
+    chat_ids_autorizados: frozenset[int]
 
     def conferir_segredo(self, segredo: str | None) -> Recusa | None:
         """Confere apenas o cabeçalho, sem olhar o corpo da requisição.
@@ -44,10 +46,13 @@ class PoliticaDeAcesso:
         return None
 
     def conferir_conversa(self, conversa: Conversa) -> Recusa | None:
-        """Confere origem e destinatário. Só faz sentido após o segredo passar."""
+        """Confere origem e pertencimento ao conjunto de destinatários autorizados.
+
+        Só faz sentido após o segredo passar.
+        """
         if conversa.tipo != "private":
             return Recusa.CONVERSA_NAO_PRIVADA
-        if conversa.chat_id != self.chat_id_autorizado:
+        if conversa.chat_id not in self.chat_ids_autorizados:
             return Recusa.CHAT_NAO_AUTORIZADO
         return None
 

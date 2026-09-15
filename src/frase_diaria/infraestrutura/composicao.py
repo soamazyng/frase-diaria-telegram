@@ -40,6 +40,26 @@ def _bot_legado(guardados: dict[str, str]) -> str:
     return guardados.get("telegram-bot-legado-id") or token.split(":", 1)[0]
 
 
+def _destinatarios_autorizados(guardados: dict[str, str]) -> frozenset[int]:
+    """Lê o conjunto de destinatários autorizados (spec v2, `telegram-chat-ids`).
+
+    Uma lista separada por vírgula num único parâmetro, não um parâmetro por
+    destinatário — decisão do ticket 23. Espaços ao redor de cada valor são
+    tolerados na leitura; nenhum é exigido ao gravar o parâmetro.
+
+    Um parâmetro vazio, só de vírgulas ou só de espaços falha alto: sem essa
+    checagem, `PoliticaDeAcesso` receberia um conjunto vazio e recusaria
+    silenciosamente todo mundo, inclusive a usuária — o mesmo tipo de defeito
+    de configuração que passa por qualquer suíte (rules.md, "O que os testes
+    não pegam").
+    """
+    valores = guardados["telegram-chat-ids"].split(",")
+    destinatarios = frozenset(int(valor.strip()) for valor in valores if valor.strip())
+    if not destinatarios:
+        raise ValueError("telegram-chat-ids não contém nenhum destinatário autorizado")
+    return destinatarios
+
+
 @lru_cache(maxsize=1)
 def segredos() -> dict[str, str]:
     """Lê os segredos do Parameter Store uma vez por container.
@@ -81,7 +101,7 @@ def montar_receber_comando() -> ReceberComando:
     return ReceberComando(
         politica=PoliticaDeAcesso(
             segredo_esperado=guardados["webhook-secret"],
-            chat_id_autorizado=int(guardados["telegram-chat-id"]),
+            chat_ids_autorizados=_destinatarios_autorizados(guardados),
         ),
         repositorio=RepositorioDeComandosDynamo(tabela=_tabela()),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),

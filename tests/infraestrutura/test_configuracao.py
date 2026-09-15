@@ -8,7 +8,7 @@ casa — com a suíte inteira verde. Estes testes prendem o nome da variável.
 import pytest
 from fastapi.testclient import TestClient
 
-from frase_diaria.infraestrutura.composicao import _bot_legado
+from frase_diaria.infraestrutura.composicao import _bot_legado, _destinatarios_autorizados
 from frase_diaria.infraestrutura.configuracao import (
     VARIAVEL_DE_VERSAO,
     VERSAO_EM_DESENVOLVIMENTO,
@@ -56,3 +56,30 @@ def test_identificador_auxiliar_do_bot_pode_faltar_no_ssm() -> None:
     guardados = {"telegram-bot-token": "123456:token"}
 
     assert _bot_legado(guardados) == "123456"
+
+
+def test_destinatarios_autorizados_le_lista_separada_por_virgula() -> None:
+    guardados = {"telegram-chat-ids": "672024065,111222333"}
+
+    assert _destinatarios_autorizados(guardados) == frozenset({672024065, 111222333})
+
+
+def test_destinatarios_autorizados_tolera_espacos_ao_redor_de_cada_valor() -> None:
+    guardados = {"telegram-chat-ids": " 672024065 , 111222333 "}
+
+    assert _destinatarios_autorizados(guardados) == frozenset({672024065, 111222333})
+
+
+def test_destinatarios_autorizados_aceita_um_unico_valor_sem_virgula() -> None:
+    guardados = {"telegram-chat-ids": "672024065"}
+
+    assert _destinatarios_autorizados(guardados) == frozenset({672024065})
+
+
+@pytest.mark.parametrize("valor", ["", ",", "   ", " , , "])
+def test_destinatarios_autorizados_falha_alto_em_vez_de_conjunto_vazio(valor: str) -> None:
+    """Um conjunto vazio recusaria silenciosamente todo mundo, inclusive a usuária."""
+    guardados = {"telegram-chat-ids": valor}
+
+    with pytest.raises(ValueError, match="telegram-chat-ids"):
+        _destinatarios_autorizados(guardados)

@@ -47,11 +47,18 @@ conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
-`telegram-chat-id` (**672024065** — a conversa da usuária; o id do bot é
-8340090374 e não serve), `webhook-secret`, `notion-token` (integração interna,
-capacidade só de leitura de conteúdo; leitura de comentários é opcional e não
-está habilitada) e `notion-pagina-id` (aceita o id puro ou a URL completa da
+`telegram-chat-ids` (v2, `.scratch/v2-telegram-bot.md` — lista de destinatários
+autorizados separados por vírgula; inclui pelo menos **672024065**, a conversa
+da usuária; o id do bot é 8340090374 e não serve), `webhook-secret`,
+`notion-token` (integração interna, capacidade só de leitura de conteúdo;
+leitura de comentários é opcional e não está habilitada) e `notion-pagina-id`
+(aceita o id puro ou a URL completa da
 página, com o título como prefixo — o cliente normaliza).
+
+**Migração em andamento (v2):** o disparo agendado da diária ainda lê o
+parâmetro singular antigo `telegram-chat-id`, não `telegram-chat-ids` — só o
+ticket 25 migra a diária para múltiplos destinatários. O parâmetro antigo só
+deve ser removido depois que o ticket 27 confirmar a migração em produção.
 
 Manuseio de segredos, cache por container e depuração do webhook: `rules.md`.
 
