@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import ClassVar, Protocol
@@ -20,7 +21,6 @@ from frase_diaria.dominio.status import (
     UltimoEnvio,
 )
 from frase_diaria.dominio.tempo import dia_local, proxima_ocorrencia_diaria
-from frase_diaria.telegram.status import formatar_status
 
 # O motivo agregado pode identificar outros destinatários; a resposta usa categorias locais.
 _MOTIVO_GENERICO_POR_ESTADO: dict[EstadoDoPedido, str] = {
@@ -40,6 +40,7 @@ class RepositorioDePedidosStatus(Protocol):
     def obter(self, identidade: str) -> Pedido | None: ...
     def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]: ...
     def indices_incertos(self, pedido: str, destinatario: int) -> set[int]: ...
+    def ultimo_pedido_do_destinatario(self, destinatario: int, antes_de: date) -> Pedido | None: ...
 
 
 @dataclass(frozen=True)
@@ -141,19 +142,21 @@ class ConsultarStatus:
                 estado=situacao_de_hoje.estado,
                 tem_partes_incertas=situacao_de_hoje.tem_incertas,
             )
-        # Sem índice por chat_id no schema, "último envio" alcança só hoje e
-        # ontem — as duas identidades diárias que dá para consultar sem
-        # varrer o histórico (spec, 4.8: "índice de pendências... sem varrer
-        # o histórico" é o mesmo princípio aplicado aqui).
-        ontem = dia_hoje - timedelta(days=1)
-        pedido_ontem = self._diaria_de(ontem)
-        if pedido_ontem is not None:
-            situacao_de_ontem = self._situacao_do_destinatario(pedido_ontem)
-            if situacao_de_ontem.estado in self.ENTREGUE:
+        ultimo = self.repositorio.ultimo_pedido_do_destinatario(self.chat_id, dia_hoje)
+        if ultimo is None:
+            # Compatibilidade com diárias gravadas antes da criação do índice
+            # por destinatário. As novas entregas deixam o histórico
+            # consultável sem Scan; o dia anterior continua alcançável pelo
+            # identificador determinístico durante a transição.
+            ultimo = self._diaria_de(dia_hoje - timedelta(days=1))
+        if ultimo is not None and self.chat_id in ultimo.destinatarios:
+            situacao_anterior = self._situacao_do_destinatario(ultimo)
+            dia = ultimo.dia_alvo_da_diaria()
+            if dia is not None and situacao_anterior.estado in self.ENTREGUE:
                 return UltimoEnvio(
-                    dia=ontem,
-                    estado=situacao_de_ontem.estado,
-                    tem_partes_incertas=situacao_de_ontem.tem_incertas,
+                    dia=dia,
+                    estado=situacao_anterior.estado,
+                    tem_partes_incertas=situacao_anterior.tem_incertas,
                 )
         return None
 
@@ -228,8 +231,9 @@ class EnviarStatus:
 
     consultar: ConsultarStatus
     canal: CanalDeEnvioTexto
+    formatar: Callable[[RelatorioDeStatus], str]
 
     def executar(self) -> None:
         relatorio = self.consultar.executar()
-        texto = formatar_status(relatorio)
+        texto = self.formatar(relatorio)
         self.canal.enviar_texto(self.consultar.chat_id, texto)

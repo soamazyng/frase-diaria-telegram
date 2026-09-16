@@ -83,7 +83,7 @@ passou com 131 testes. Há 366 avisos de depreciação em Starlette/Botocore, se
 A primeira execução do gate encontrou uma linha acima do limite em `pedidos.py`;
 a formatação foi corrigida antes da validação final.
 
-A revisão final usou como base `3395609` e somente os arquivos da task, com agentes
+A revisão final usou como base `<COMMIT_SHA>` e somente os arquivos da task, com agentes
 independentes de Standards e Spec. Ambos encontraram uma lacuna adicional: uma
 retomada com parte incerta podia liberar a frase após falha permanente de outra
 parte ou encerramento da janela. O teste público parametrizado reproduziu os dois

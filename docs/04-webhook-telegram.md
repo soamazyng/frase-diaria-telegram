@@ -44,7 +44,7 @@ SEGREDO=$(aws ssm get-parameter --profile perfil-padrao --region us-east-1 \
 
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/setWebhook" \
   -H 'Content-Type: application/json' \
-  -d "{\"url\":\"https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/telegram/webhook\",
+  -d "{\"url\":\"https://<API_ID>.execute-api.us-east-1.amazonaws.com/telegram/webhook\",
        \"secret_token\":\"${SEGREDO}\",
        \"allowed_updates\":[\"message\"],
        \"drop_pending_updates\":true}"

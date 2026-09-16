@@ -13,11 +13,9 @@ Parameters:
     Description: Prefixo dos nomes dos recursos; casa com as stacks de dados e aplicação.
   ProprietarioGitHub:
     Type: String
-    Default: soamazyng
     Description: "Dono (usuário/organização) do repositório no GitHub."
   IdDoProprietarioGitHub:
     Type: String
-    Default: "443219"
     Description: >
       ID numérico imutável do dono no GitHub (`gh api users/<dono> --jq .id`).
       Repositórios criados depois de 2026-07-15 emitem o claim `sub` do OIDC
@@ -28,11 +26,9 @@ Parameters:
       to perform sts:AssumeRoleWithWebIdentity" contra a AWS real.
   NomeDoRepositorio:
     Type: String
-    Default: frase-diaria-telegram
     Description: "Nome do repositório no GitHub, sem o dono."
   IdDoRepositorio:
     Type: String
-    Default: "1359588301"
     Description: >
       ID numérico imutável do repositório (`gh api repos/<dono>/<repo> --jq .id`).
       Mesma nuance de IdDoProprietarioGitHub.
@@ -51,8 +47,11 @@ Parameters:
       esta stack até este parâmetro ser adicionado.
   BucketGerenciadoPeloSAM:
     Type: String
-    Default: aws-sam-cli-managed-default-samclisourcebucket-afhcijvri5mn
-    Description: "Nome do bucket S3 dentro da stack acima (Output SourceBucket, conferido ao vivo)."
+    Description: "Nome do bucket S3 dentro da stack acima (Output SourceBucket)."
+  AmbienteGitHub:
+    Type: String
+    Default: producao
+    Description: Environment protegido usado pelos jobs que assumem papéis AWS.
   BranchDePublicacao:
     Type: String
     Default: develop
@@ -84,6 +83,31 @@ Resources:
         - Key: projeto
           Value: !Ref Prefixo
 
+  BucketDeRecuperacao:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: projeto
+          Value: !Ref Prefixo
+        - Key: finalidade
+          Value: recuperacao
+
   # Assumido pelo workflow de push em `develop` (tickets 17/18) para publicar
   # a stack de aplicação. Nunca toca a stack de dados — publicar/republicar a
   # aplicação não deve nem precisa alcançar o histórico (spec, 4.9).
@@ -108,7 +132,8 @@ Resources:
               # "repo:DONO/REPO:ref:..."): ver IdDoProprietarioGitHub acima.
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:ref:refs/heads/${BranchDePublicacao}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:environment:${AmbienteGitHub}"
+                token.actions.githubusercontent.com:ref: !Sub "refs/heads/${BranchDePublicacao}"
       Policies:
         - PolicyName: PublicarStackDeAplicacao
           PolicyDocument:
@@ -116,7 +141,7 @@ Resources:
             Statement:
               # ATENÇÃO AO EDITAR: este bloco de Statement (TransformSAM até
               # BucketDeArtefatosGerenciadoPeloSAM) é duplicado, palavra por
-              # palavra, na Policy do PapelDeInfraestrutura logo abaixo — o
+              # palavra, na Policy do PapelDeReconciliacao logo abaixo — o
               # reconciliador (ticket 20) precisa das mesmas permissões de
               # deploy para republicar a stack de aplicação. Idealmente seria
               # uma única definição referenciada duas vezes (âncora/alias
@@ -177,7 +202,6 @@ Resources:
                   - apigateway:PUT
                   - apigateway:PATCH
                   - apigateway:DELETE
-                  - apigateway:TagResource
                 Resource:
                   # ARN de API Gateway v2 não carrega o id da conta — o padrão
                   # /apis* casaria com qualquer API HTTP da conta/região, não
@@ -277,6 +301,12 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}"
                   - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}/*"
+              - Sid: ArquivoDuravelDeRecuperacao
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "${BucketDeRecuperacao.Arn}/recuperacao/*"
 
   # Assumido pelo workflow periódico de reconciliação de publicações (ticket
   # 20): as mesmas permissões de deploy do papel de publicação, duplicadas
@@ -286,19 +316,11 @@ Resources:
   # fechado sem merge), não só ler o estado dela. Escopo idêntico ao papel
   # de publicação: só a stack frase-diaria-app, nunca a stack de dados,
   # nunca um recurso fora do prefixo do projeto.
-  PapelDeInfraestrutura:
+  PapelDeReconciliacao:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${Prefixo}-infraestrutura"
-      # Texto da Description deliberadamente inalterado (ainda "inspeciona o
-      # estado da publicação", embora o papel agora também republique):
-      # mudar este campo chama iam:UpdateRoleDescription, ação que a
-      # identidade local que aplica este template (user/aws-developer-group)
-      # não tem — achado ao vivo (AccessDenied real, ver docs/20), que
-      # travou a stack em UPDATE_ROLLBACK_FAILED até ser destravada com
-      # `continue-update-rollback --resources-to-skip`. Nenhuma mudança real
-      # chegou a ser aplicada nessa tentativa; o papel ficou intacto.
-      Description: !Sub "CI/CD (${ProprietarioGitHub}/${NomeDoRepositorio}@${BranchDeInfraestrutura}): inspeciona o estado da publicação."
+      RoleName: !Sub "${Prefixo}-reconciliacao"
+      Description: !Sub "CI/CD (${ProprietarioGitHub}/${NomeDoRepositorio}@${BranchDeInfraestrutura}): reconcilia a publicação."
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -311,7 +333,8 @@ Resources:
               # Mesmo formato imutável do papel de publicação, acima.
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:ref:refs/heads/${BranchDeInfraestrutura}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}:environment:${AmbienteGitHub}"
+                token.actions.githubusercontent.com:ref: !Sub "refs/heads/${BranchDeInfraestrutura}"
       Policies:
         - PolicyName: PublicarStackDeAplicacao
           PolicyDocument:
@@ -364,7 +387,6 @@ Resources:
                   - apigateway:PUT
                   - apigateway:PATCH
                   - apigateway:DELETE
-                  - apigateway:TagResource
                 Resource:
                   # ARN de API Gateway v2 não carrega o id da conta — o padrão
                   # /apis* casaria com qualquer API HTTP da conta/região, não
@@ -464,6 +486,12 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}"
                   - !Sub "arn:${AWS::Partition}:s3:::${BucketGerenciadoPeloSAM}/*"
+              - Sid: ArquivoDuravelDeRecuperacao
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "${BucketDeRecuperacao.Arn}/recuperacao/*"
 
 Outputs:
   ProvedorOIDCArn:
@@ -475,8 +503,13 @@ Outputs:
     Value: !GetAtt PapelDePublicacao.Arn
     Export:
       Name: !Sub "${Prefixo}-PapelDePublicacaoArn"
-  PapelDeInfraestruturaArn:
+  PapelDeReconciliacaoArn:
     Description: Cole em `role-to-assume` no workflow de reconciliação (não é segredo).
-    Value: !GetAtt PapelDeInfraestrutura.Arn
+    Value: !GetAtt PapelDeReconciliacao.Arn
     Export:
-      Name: !Sub "${Prefixo}-PapelDeInfraestruturaArn"
+      Name: !Sub "${Prefixo}-PapelDeReconciliacaoArn"
+  BucketDeRecuperacaoNome:
+    Description: Configure como variável AWS_BUCKET_ARTEFATOS no GitHub.
+    Value: !Ref BucketDeRecuperacao
+    Export:
+      Name: !Sub "${Prefixo}-BucketDeRecuperacaoNome"

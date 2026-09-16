@@ -60,7 +60,7 @@ YAML já estava correto): é uma configuração do próprio repositório, expost
 pela API como `actions/permissions/workflow` → `can_approve_pull_request_reviews`
 — o mesmo toggle que a interface do GitHub chama de "Allow GitHub Actions to
 create and approve pull requests" (confirmado via `gh api
-repos/soamazyng/frase-diaria-telegram/actions/permissions/workflow`: o campo
+repos/<GITHUB_OWNER>/frase-diaria-telegram/actions/permissions/workflow`: o campo
 estava `false`). O GitHub agrupa as duas capacidades num único campo — não
 existe como conceder só "criar PR" sem também conceder "aprovar PR". Avaliei
 o risco como baixo neste projeto (usuária única, sem gate de revisão humana
@@ -107,10 +107,10 @@ de verdade.
   `contents: read` + `pull-requests: write` no job), nenhum segredo tocado.
 - **Exercício real, não simulado, com duas falhas reais corrigidas em
   sequência** — logs obtidos via `gh api repos/.../actions/jobs/<id>/logs`:
-  - 1ª execução (commit `3b7fb17`, `permissions: {}` no topo): falhou —
+  - 1ª execução (commit `<COMMIT_SHA>`, `permissions: {}` no topo): falhou —
     `GraphQL: Resource not accessible by integration
     (repository.defaultBranchRef)`.
-  - 2ª execução (commit `35075b4`, `contents: read` só no topo): falhou com
+  - 2ª execução (commit `<COMMIT_SHA>`, `contents: read` só no topo): falhou com
     o mesmo erro — o token efetivo da execução mostrou só `Metadata: read` e
     `PullRequests: write`, confirmando que o `permissions` do job zerou o do
     topo.

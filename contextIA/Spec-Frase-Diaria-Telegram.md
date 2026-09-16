@@ -16,8 +16,8 @@ O sinal de valor será identificar, após duas semanas de uso, pelo menos duas f
 
 1. O refino aprovado enviado nesta conversa determina o escopo.
 2. O anexo Refino-inicial.txt complementa somente o que não conflita com o refino aprovado.
-3. A [página original do projeto](https://app.notion.com/p/80a96c354e744bf192b73eb4224c6e9e) é referência histórica.
-4. A [coleção no Notion](https://app.notion.com/p/260ec81f1f288005b4eee9fb3445364e) é a fonte de conteúdo do bot.
+3. A [página original do projeto](https://app.notion.com/p/<NOTION_PAGE_ID>) é referência histórica.
+4. A [coleção no Notion](https://app.notion.com/p/<NOTION_PAGE_ID>) é a fonte de conteúdo do bot.
 
 A versão consultada da coleção contém 77 itens numerados preenchidos, um item vazio e a subpágina do projeto. A aplicação deve descobrir o conteúdo a cada sincronização; esse número não é constante.
 

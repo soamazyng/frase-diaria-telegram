@@ -23,7 +23,7 @@ stack de aplicação existir, o CloudFormation recusa excluir a tabela exportada
 
 ## Pré-requisitos
 
-- Perfil AWS configurado (`perfil-padrao`, conta 712790115760, região `us-east-1`).
+- Perfil AWS configurado (`perfil-padrao`, conta <AWS_ACCOUNT_ID>, região `us-east-1`).
 - `uv` instalado. O SAM CLI roda via `uvx`, sempre em versão atual — o SAM
   instalado na máquina pode ser antigo demais para o runtime escolhido.
 
@@ -42,7 +42,7 @@ testado. Sem o parâmetro, a versão publicada fica `desenvolvimento`.
 ## Verificar
 
 ```sh
-curl https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
+curl https://<API_ID>.execute-api.us-east-1.amazonaws.com/health
 ```
 
 Resposta esperada:

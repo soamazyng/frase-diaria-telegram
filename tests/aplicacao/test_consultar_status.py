@@ -15,6 +15,7 @@ import pytest
 from frase_diaria.aplicacao.consultar_status import ConsultarStatus, EnviarStatus
 from frase_diaria.dominio.colecao import ColecaoValida, SnapshotPersistido, TentativaDeSincronizacao
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
+from frase_diaria.telegram.status import formatar_status
 
 CHAT = 101
 HOJE = date(2026, 9, 7)
@@ -47,6 +48,19 @@ class RepositorioFalso:
 
     def indices_confirmados(self, identidade: str, destinatario: int) -> set[int]:
         return self._confirmadas.get((identidade, destinatario), set())
+
+    def ultimo_pedido_do_destinatario(self, destinatario: int, antes_de: date) -> Pedido | None:
+        candidatos: list[tuple[date, Pedido]] = []
+        for pedido in self._pedidos.values():
+            dia = pedido.dia_alvo_da_diaria()
+            if (
+                pedido.origem is Origem.DIARIA
+                and destinatario in pedido.destinatarios
+                and dia is not None
+                and dia < antes_de
+            ):
+                candidatos.append((dia, pedido))
+        return max(candidatos, key=lambda candidato: candidato[0])[1] if candidatos else None
 
 
 class ColecaoFalsa:
@@ -361,6 +375,18 @@ def test_ultimo_envio_recua_para_ontem_quando_hoje_ainda_nao_existe() -> None:
     assert relatorio.ultimo_envio.dia == ontem
 
 
+def test_ultimo_envio_encontra_entrega_mais_antiga_que_ontem() -> None:
+    dia_antigo = HOJE - timedelta(days=10)
+    repositorio = RepositorioFalso(
+        {Pedido.identidade_de_diaria(dia_antigo): _diaria(dia_antigo, "enviado")}
+    )
+
+    ultimo = _consultar(repositorio).executar().ultimo_envio
+
+    assert ultimo is not None
+    assert ultimo.dia == dia_antigo
+
+
 def test_ultimo_envio_de_ontem_no_formato_anterior_a_v2_ainda_e_encontrado() -> None:
     """Achado do code-review: no dia da publicação da v2, a diária de ontem
     ainda está gravada como `diaria#<chat_id>#<dia>` (formato anterior)."""
@@ -526,7 +552,7 @@ def test_enviar_status_manda_o_relatorio_formatado_para_a_conversa() -> None:
     canal = CanalEspiao()
     consultar = _consultar(RepositorioFalso())
 
-    EnviarStatus(consultar=consultar, canal=canal).executar()
+    EnviarStatus(consultar=consultar, canal=canal, formatar=formatar_status).executar()
 
     assert len(canal.enviados) == 1
     chat_id, texto = canal.enviados[0]
@@ -573,7 +599,7 @@ def test_resposta_nao_expoe_motivo_bruto_e_mantem_horario_local(
     repositorio = RepositorioFalso({pedido.identidade: pedido})
     canal = CanalEspiao()
 
-    EnviarStatus(_consultar(repositorio), canal).executar()
+    EnviarStatus(_consultar(repositorio), canal, formatar_status).executar()
 
     destino, texto = canal.enviados[0]
     assert destino == CHAT

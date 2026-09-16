@@ -14,7 +14,7 @@ from frase_diaria.dominio.autorizacao import (
     Recusa,
 )
 
-CHAT_DA_USUARIA = 8340090374
+CHAT_DA_USUARIA = 111111
 CHAT_DO_IRMAO = 111222333
 POLITICA = PoliticaDeAcesso(
     segredo_esperado="segredo-certo",

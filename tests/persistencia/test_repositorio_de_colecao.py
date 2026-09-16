@@ -103,7 +103,15 @@ def test_preserva_rich_text_blocos_e_discussoes(repositorio: Any) -> None:
         blocos=(
             Bloco(
                 tipo="numbered_list_item",
-                trechos=(Trecho(texto="negrito", negrito=True, link="https://exemplo.com"),),
+                trechos=(
+                    Trecho(
+                        texto="negrito",
+                        negrito=True,
+                        link="https://exemplo.com",
+                        cor="red",
+                        fundo="blue_background",
+                    ),
+                ),
             ),
             Bloco(tipo="paragraph", trechos=(Trecho(texto="descendente"),)),
         ),
@@ -118,6 +126,8 @@ def test_preserva_rich_text_blocos_e_discussoes(repositorio: Any) -> None:
     assert recuperada.discussoes == ("um comentário",)
     assert recuperada.blocos[0].trechos[0].negrito is True
     assert recuperada.blocos[0].trechos[0].link == "https://exemplo.com"
+    assert recuperada.blocos[0].trechos[0].cor == "red"
+    assert recuperada.blocos[0].trechos[0].fundo == "blue_background"
     assert recuperada.blocos[1].tipo == "paragraph"
 
 
@@ -198,3 +208,17 @@ def test_nova_tentativa_substitui_a_anterior(repositorio: Any) -> None:
 
     tentativa = repositorio.ultima_tentativa()
     assert tentativa == TentativaDeSincronizacao(instante=depois, erro=None)
+
+
+def test_tentativa_antiga_nao_sobrescreve_a_mais_recente(repositorio: Any) -> None:
+    recente = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    repositorio.registrar_tentativa(TentativaDeSincronizacao(instante=recente, erro=None))
+
+    repositorio.registrar_tentativa(
+        TentativaDeSincronizacao(instante=INSTANTE, erro="falha atrasada")
+    )
+
+    assert repositorio.ultima_tentativa() == TentativaDeSincronizacao(
+        instante=recente,
+        erro=None,
+    )

@@ -22,7 +22,7 @@ class CriadorDePedidosFalso:
         return True
 
 
-CHAT = 672024065
+CHAT = 111111
 CHAT_DO_IRMAO = 111222333
 
 

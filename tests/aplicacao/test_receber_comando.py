@@ -10,12 +10,14 @@ from typing import Any
 
 import pytest
 
+from frase_diaria.aplicacao.portas import ErroDeEnvio
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso
 from frase_diaria.dominio.tempo import politica_do_extra
+from frase_diaria.telegram.atualizacao import interpretar
 
 SEGREDO = "segredo-certo"
-CHAT = 8340090374
+CHAT = 111111
 CHAT_DO_IRMAO = 111222333
 POLITICA = PoliticaDeAcesso(segredo_esperado=SEGREDO, chat_ids_autorizados=frozenset({CHAT}))
 POLITICA_COM_DOIS_DESTINATARIOS = PoliticaDeAcesso(
@@ -31,6 +33,8 @@ class RelogioFixo:
 class RepositorioEmMemoria:
     def __init__(self) -> None:
         self.registrados: list[tuple[int, str]] = []
+        self.em_andamento: set[int] = set()
+        self.concluidos: set[int] = set()
 
     def registrar(self, atualizacao, instante) -> bool:  # type: ignore[no-untyped-def]
         chave = (atualizacao.update_id, atualizacao.comando.value)
@@ -38,6 +42,19 @@ class RepositorioEmMemoria:
             return False
         self.registrados.append(chave)
         return True
+
+    def reivindicar_acao(self, update_id: int) -> bool:
+        if update_id in self.em_andamento or update_id in self.concluidos:
+            return False
+        self.em_andamento.add(update_id)
+        return True
+
+    def liberar_acao(self, update_id: int) -> None:
+        self.em_andamento.remove(update_id)
+
+    def marcar_acao_concluida(self, update_id: int) -> None:
+        self.em_andamento.remove(update_id)
+        self.concluidos.add(update_id)
 
 
 class RepositorioQueFalha:
@@ -68,6 +85,7 @@ def _mensagem(
 
 def _caso(repositorio: Any | None = None, canal: Any | None = None) -> ReceberComando:
     return ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
         repositorio=repositorio if repositorio is not None else RepositorioEmMemoria(),
         canal=canal if canal is not None else CanalEspiao(),
@@ -203,6 +221,7 @@ class DespachanteEspiao:
 
 def _caso_com_pedidos(pedidos: Any, despachante: Any, canal: Any = None) -> ReceberComando:
     return ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
         repositorio=RepositorioEmMemoria(),
         canal=canal if canal is not None else CanalEspiao(),
@@ -305,6 +324,7 @@ def test_reentrega_de_frase_ja_registrada_ainda_garante_o_pedido() -> None:
     repositorio = RepositorioEmMemoria()
     pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
     caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
         repositorio=repositorio,
         canal=CanalEspiao(),
@@ -326,16 +346,42 @@ class CanalQueFalha:
         raise RuntimeError("Telegram fora do ar")
 
 
-def test_falha_ao_enviar_a_ajuda_nao_vira_erro_http() -> None:
-    """5xx só quando reentregar tem chance de dar certo (rules.md).
+class CanalQueRecupera(CanalEspiao):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tentativas = 0
 
-    A reentrega encontraria o comando já registrado, devolveria sucesso sem
-    responder, e a ajuda nunca chegaria. Como repetir `/start` é trivial e não
-    consome frase, registrar a falha e responder 200 é o desfecho honesto.
-    """
-    desfecho = _caso(canal=CanalQueFalha()).executar(segredo=SEGREDO, corpo=_mensagem("/start"))
+    def enviar_texto(self, chat_id: int, texto: str) -> int:
+        self.tentativas += 1
+        if self.tentativas == 1:
+            raise ErroDeEnvio("Telegram recusou")
+        return super().enviar_texto(chat_id, texto)
 
-    assert desfecho is Desfecho.ACEITO
+
+def test_falha_ambigua_ao_enviar_ajuda_nao_autoriza_reenvio_cego() -> None:
+    repositorio = RepositorioEmMemoria()
+    caso = _caso(repositorio=repositorio, canal=CanalQueFalha())
+    corpo = _mensagem("/start")
+
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.ACEITO
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.JA_CONHECIDO
+
+
+def test_reentrega_de_start_repete_somente_a_acao_incompleta() -> None:
+    repositorio = RepositorioEmMemoria()
+    canal = CanalQueRecupera()
+    caso = _caso(repositorio, canal)
+    corpo = _mensagem("/start", update_id=77)
+
+    primeiro = caso.executar(segredo=SEGREDO, corpo=corpo)
+    segundo = caso.executar(segredo=SEGREDO, corpo=corpo)
+    terceiro = caso.executar(segredo=SEGREDO, corpo=corpo)
+
+    assert primeiro is Desfecho.NAO_PERSISTIDO
+    assert segundo is Desfecho.JA_CONHECIDO
+    assert terceiro is Desfecho.JA_CONHECIDO
+    assert len(repositorio.registrados) == 1
+    assert len(canal.enviados) == 1
 
 
 def test_update_irrelevante_sem_segredo_nao_e_reconhecido() -> None:
@@ -368,6 +414,7 @@ def test_status_pede_ao_worker_o_relatorio_da_conversa() -> None:
     despachante = DespachanteEspiao()
 
     desfecho = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
         repositorio=RepositorioEmMemoria(),
         canal=CanalEspiao(),
@@ -385,6 +432,7 @@ def test_status_repetido_nao_pede_o_relatorio_de_novo() -> None:
     repositorio = RepositorioEmMemoria()
     despachante = DespachanteEspiao()
     caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
         repositorio=repositorio,
         canal=CanalEspiao(),
@@ -408,6 +456,7 @@ def test_frase_funciona_para_qualquer_destinatario_autorizado(chat_id: int) -> N
     """AC36: um segundo destinatário autorizado usa /frase como qualquer outro."""
     pedidos, despachante = PedidosEspiao(), DespachanteEspiao()
     caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA_COM_DOIS_DESTINATARIOS,
         repositorio=RepositorioEmMemoria(),
         canal=CanalEspiao(),
@@ -430,6 +479,7 @@ def test_status_funciona_para_qualquer_destinatario_autorizado(chat_id: int) -> 
     """AC36: um segundo destinatário autorizado usa /status como qualquer outro."""
     despachante = DespachanteEspiao()
     caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA_COM_DOIS_DESTINATARIOS,
         repositorio=RepositorioEmMemoria(),
         canal=CanalEspiao(),
@@ -450,6 +500,7 @@ def test_recusa_terceiro_chat_id_mesmo_com_dois_destinatarios_autorizados() -> N
     """AC37: ter mais de um destinatário autorizado não afrouxa a recusa dos demais."""
     repositorio, canal = RepositorioEmMemoria(), CanalEspiao()
     caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA_COM_DOIS_DESTINATARIOS,
         repositorio=repositorio,
         canal=canal,
@@ -465,16 +516,42 @@ def test_recusa_terceiro_chat_id_mesmo_com_dois_destinatarios_autorizados() -> N
     assert canal.enviados == []
 
 
-def test_falha_ao_pedir_status_nao_derruba_o_webhook() -> None:
-    # Melhor esforço, como o despacho do /frase: o comando já está registrado,
-    # e devolver erro faria o Telegram reentregar algo já reconhecido.
-    desfecho = ReceberComando(
+def test_falha_ambigua_ao_pedir_status_nao_redespacha() -> None:
+    repositorio = RepositorioEmMemoria()
+    despachante = DespachanteEspiao(falhar=True)
+    caso = ReceberComando(
+        interpretar=interpretar,
         politica=POLITICA,
-        repositorio=RepositorioEmMemoria(),
+        repositorio=repositorio,
         canal=CanalEspiao(),
         relogio=RelogioFixo(),
         pedidos=PedidosEspiao(),
-        despachante=DespachanteEspiao(falhar=True),
-    ).executar(segredo=SEGREDO, corpo=_mensagem("/status"))
+        despachante=despachante,
+    )
+    corpo = _mensagem("/status")
 
-    assert desfecho is Desfecho.ACEITO
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.ACEITO
+    despachante.falhar = False
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.JA_CONHECIDO
+    assert despachante.pedidos_de_status == []
+
+
+def test_claim_de_status_impede_duplo_despacho() -> None:
+    repositorio = RepositorioEmMemoria()
+    despachante = DespachanteEspiao(falhar=True)
+    caso = ReceberComando(
+        interpretar=interpretar,
+        politica=POLITICA,
+        repositorio=repositorio,
+        canal=CanalEspiao(),
+        relogio=RelogioFixo(),
+        pedidos=PedidosEspiao(),
+        despachante=despachante,
+    )
+    corpo = _mensagem("/status", update_id=88)
+
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.ACEITO
+    despachante.falhar = False
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.JA_CONHECIDO
+    assert caso.executar(segredo=SEGREDO, corpo=corpo) is Desfecho.JA_CONHECIDO
+    assert despachante.pedidos_de_status == []

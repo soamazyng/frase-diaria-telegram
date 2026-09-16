@@ -173,6 +173,7 @@ jobs:
     name: Publicar em produção
     needs: [construir, garantir-pr]
     runs-on: ubuntu-latest
+    environment: producao
     concurrency:
       # Grupo fixo (não por ref): só existe uma produção. Sem
       # cancel-in-progress — este job muta a stack de aplicação; cancelar no
@@ -192,6 +193,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       STACK_APLICACAO: frase-diaria-app
+      BUCKET_ARTEFATOS: ${{ vars.AWS_BUCKET_ARTEFATOS }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -280,17 +282,42 @@ jobs:
         if: steps.checar-atualidade.outputs.publicar == 'sim'
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          # ARN fixo (não é segredo — AC28; a trust policy em
-          # infra/bootstrap.yaml restringe quem pode assumi-lo, no formato
-          # imutável baseado em IDs — confirmado contra um token OIDC real
-          # nesta primeira execução do pipeline, ver docs/18). Este job NÃO
-          # declara `environment:` do Actions de propósito: isso mudaria o
-          # claim `sub` do token OIDC de "ref:refs/heads/develop" para
-          # "environment:<nome>", e a trust policy do papel exige
-          # exatamente o primeiro formato.
-          role-to-assume: arn:aws:iam::712790115760:role/frase-diaria-publicacao
+          # O ARN fica nas variáveis do repositório para não versionar
+          # identificadores operacionais. A trust policy exige este
+          # environment e também o ref exato de develop.
+          role-to-assume: ${{ vars.AWS_ROLE_PUBLICACAO_ARN }}
           aws-region: us-east-1
           role-session-name: github-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Preservar artefato imutável para recuperação
+        if: steps.checar-atualidade.outputs.publicar == 'sim'
+        env:
+          CHECKSUM_DO_ARTEFATO: ${{ needs.construir.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BUCKET_ARTEFATOS" ]; then
+            echo "::error::a variável AWS_BUCKET_ARTEFATOS não está configurada"
+            exit 1
+          fi
+          (cd .aws-sam/build && zip -qr /tmp/artefato-publicacao.zip .)
+          chave="recuperacao/$GITHUB_REPOSITORY_ID/$GITHUB_SHA.zip"
+          checksumExistente="$(aws s3api head-object --bucket "$BUCKET_ARTEFATOS" \
+            --key "$chave" --query 'Metadata.checksum' --output text 2>/dev/null || true)"
+          if [ "$checksumExistente" = "$CHECKSUM_DO_ARTEFATO" ]; then
+            exit 0
+          fi
+          if [ -n "$checksumExistente" ] && [ "$checksumExistente" != "None" ]; then
+            echo "::error::já existe artefato diferente para este SHA"
+            exit 1
+          fi
+          if ! aws s3api put-object --bucket "$BUCKET_ARTEFATOS" --key "$chave" \
+            --body /tmp/artefato-publicacao.zip --server-side-encryption AES256 \
+            --metadata "checksum=$CHECKSUM_DO_ARTEFATO" --if-none-match '*' \
+            >/dev/null 2>&1; then
+            echo "::error::não foi possível preservar o artefato imutável"
+            exit 1
+          fi
 
       - name: Registrar publicação em andamento
         if: steps.checar-atualidade.outputs.publicar == 'sim'
@@ -349,14 +376,21 @@ jobs:
           # API), pulando a desta própria tentativa, até achar a última com
           # status "success".
           shaRecuperacao=""
+          checksumRecuperacao=""
           for id in $(gh api "repos/$GH_REPO/deployments?environment=producao&per_page=20" --jq '.[].id'); do
             if [ "$id" = "$ID_DA_IMPLANTACAO" ]; then
               continue
             fi
             estado="$(gh api "repos/$GH_REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // empty')"
             if [ "$estado" = "success" ]; then
-              shaRecuperacao="$(gh api "repos/$GH_REPO/deployments/$id" --jq .sha)"
-              break
+              implantacao="$(gh api "repos/$GH_REPO/deployments/$id")"
+              checksum="$(echo "$implantacao" | jq -r '.description // empty' \
+                | sed -n 's/^checksum sha256:\([0-9a-f]\{64\}\)$/\1/p')"
+              if [ -n "$checksum" ]; then
+                shaRecuperacao="$(echo "$implantacao" | jq -r .sha)"
+                checksumRecuperacao="$checksum"
+                break
+              fi
             fi
           done
           if [ -z "$shaRecuperacao" ]; then
@@ -365,6 +399,15 @@ jobs:
             echo "Publicação saudável anterior encontrada: $shaRecuperacao"
           fi
           echo "sha=$shaRecuperacao" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksumRecuperacao" >> "$GITHUB_OUTPUT"
+
+      - name: Obter artefato da publicação saudável anterior
+        if: always() && steps.localizar-recuperacao.outputs.sha != ''
+        id: obter-recuperacao
+        uses: ./.github/actions/obter-artefato
+        with:
+          sha: ${{ steps.localizar-recuperacao.outputs.sha }}
+          checksum: ${{ steps.localizar-recuperacao.outputs.checksum }}
 
       - name: Recuperar publicação saudável anterior
         # always(): sem isso, o GitHub Actions insere um success() implícito
@@ -375,39 +418,14 @@ jobs:
         # Achado ao vivo (ticket 19: teste de fogo real) — o passo ficava
         # "skipped" mesmo com steps.localizar-recuperacao.outputs.sha
         # preenchido, e a cadeia caía direto em desabilitar o agendamento.
-        if: always() && steps.localizar-recuperacao.outputs.sha != ''
+        if: always() && steps.obter-recuperacao.outputs.disponivel == 'sim'
         id: recuperar
         env:
           SHA_RECUPERACAO: ${{ steps.localizar-recuperacao.outputs.sha }}
+          CHECKSUM_RECUPERACAO: ${{ steps.localizar-recuperacao.outputs.checksum }}
         run: |
           set -euo pipefail
-
-          # "Sem reconstruir dependências" (spec, 4.12): baixa o artefato já
-          # construído de quando $SHA_RECUPERACAO passou pelo job
-          # "construir", de uma execução passada deste mesmo workflow — só
-          # possível enquanto a retenção do artefato (14 dias) não expirou.
-          idArtefato="$(gh api "repos/$GH_REPO/actions/artifacts?name=artefato-$SHA_RECUPERACAO&per_page=1" --jq '.artifacts[0].id // empty')"
-          if [ -z "$idArtefato" ]; then
-            echo "::error::artefato de $SHA_RECUPERACAO não está mais disponível (retenção expirada); recuperação automática impossível."
-            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          rm -rf .aws-sam/build
-          mkdir -p .aws-sam/build
-          gh api "repos/$GH_REPO/actions/artifacts/$idArtefato/zip" > /tmp/artefato-recuperacao.zip
-          unzip -q /tmp/artefato-recuperacao.zip -d .aws-sam/build
-
-          esperado="$(cat .aws-sam/build/CHECKSUM.txt)"
-          obtido="$(find .aws-sam/build -type f ! -name CHECKSUM.txt -print0 \
-            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
-          if [ "$esperado" != "$obtido" ]; then
-            echo "::error::checksum do artefato de recuperação ($SHA_RECUPERACAO) não confere"
-            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          corpo="$(jq -n --arg ref "$SHA_RECUPERACAO" --arg descricao "recuperação automática após falha em $GITHUB_SHA" \
+          corpo="$(jq -n --arg ref "$SHA_RECUPERACAO" --arg descricao "checksum sha256:$CHECKSUM_RECUPERACAO" \
             '{ref: $ref, environment: "producao", auto_merge: false, required_contexts: [], description: $descricao}')"
           idImplantacaoRecuperacao="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
           gh api --method POST "repos/$GH_REPO/deployments/$idImplantacaoRecuperacao/statuses" \

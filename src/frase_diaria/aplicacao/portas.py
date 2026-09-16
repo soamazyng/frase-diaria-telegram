@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -18,14 +18,6 @@ class Relogio(Protocol):
         ...
 
 
-class Sorteio(Protocol):
-    """Gerador aleatório. Substituível nos testes para tornar a seleção determinística."""
-
-    def escolher[T](self, candidatos: Sequence[T]) -> T:
-        """Escolhe um entre os candidatos. Recebe sequência não vazia."""
-        ...
-
-
 class ConflitoDeConcorrencia(RuntimeError):
     """Uma escrita condicional perdeu a corrida: outro executor já avançou o estado.
 
@@ -33,6 +25,78 @@ class ConflitoDeConcorrencia(RuntimeError):
     escrita foi recusada porque o que estava em memória já não é o que está
     persistido, e sobrescrever corromperia o estado (spec, 4.9).
     """
+
+
+ID_DE_MENSAGEM_DESCONHECIDO = 0
+
+
+@dataclass(frozen=True)
+class ChaveDeParte:
+    pedido: str
+    destinatario: int
+    indice: int
+
+
+@dataclass(frozen=True)
+class TentativaDeParte:
+    instante: datetime
+    sequencial: int | None
+
+
+@dataclass(frozen=True)
+class IntencaoDeParte:
+    chave: ChaveDeParte
+    texto: str
+    tentativa: TentativaDeParte
+
+
+@dataclass(frozen=True)
+class ConteudoConfirmado:
+    texto: str
+    message_id: int
+
+
+@dataclass(frozen=True)
+class ConfirmacaoDeParte:
+    chave: ChaveDeParte
+    conteudo: ConteudoConfirmado
+    tentativa: TentativaDeParte
+
+
+@dataclass(frozen=True)
+class IncertezaDeParte:
+    chave: ChaveDeParte
+    motivo: str
+    tentativa: TentativaDeParte
+
+
+@dataclass(frozen=True)
+class ClassificacaoDoErroDeEnvio:
+    codigo_http: int | None = None
+    retry_after_s: float | None = None
+    transitorio: bool = False
+    resultado_ambiguo: bool = False
+
+
+class ErroDeEnvio(RuntimeError):
+    """Falha sanitizada de um canal externo.
+
+    ``resultado_ambiguo`` separa uma rejeição confirmada de uma conexão que
+    caiu sem resposta. Só a primeira permite apagar a intenção e retentar sem
+    risco de duplicar uma mensagem que o provedor pode ter aceitado.
+    """
+
+    def __init__(
+        self,
+        mensagem: str,
+        classificacao: ClassificacaoDoErroDeEnvio | None = None,
+    ) -> None:
+        super().__init__(mensagem)
+        detalhes = classificacao or ClassificacaoDoErroDeEnvio()
+        self.codigo_http = detalhes.codigo_http
+        self.retry_after_s = detalhes.retry_after_s
+        self.transitorio = detalhes.transitorio
+        self.resultado_ambiguo = detalhes.resultado_ambiguo
 
 
 class FonteDaColecao(Protocol):

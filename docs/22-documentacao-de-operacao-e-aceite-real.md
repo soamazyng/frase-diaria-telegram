@@ -110,7 +110,7 @@ conversa: `rules.md`, seção "Segredos".
   fechado sem merge são cobertos de hora em hora pelo reconciliador —
   `docs/20-reconciliador-de-publicacoes-e-dados.md`.
 - **Procedimento manual de último recurso** (quando a recuperação
-  automática também falha, ex. artefato com retenção expirada): `git
+  automática e o arquivo durável no S3 também falham): `git
   checkout <sha-válido>` seguido de `make publicar-app VERSAO=<sha-válido>`
   a partir de um checkout local, publicando exatamente esse commit;
   reabilitar o agendamento diário depois é responsabilidade manual (AWS

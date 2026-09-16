@@ -13,6 +13,10 @@ import pytest
 RAIZ = Path(__file__).resolve().parent.parent / "src" / "frase_diaria"
 CAMADAS_PURAS = ("dominio", "aplicacao")
 DEPENDENCIAS_PROIBIDAS = ("fastapi", "mangum", "starlette", "boto3", "botocore")
+DEPENDENCIAS_INTERNAS_PROIBIDAS = {
+    "dominio": ("frase_diaria.aplicacao", "frase_diaria.infraestrutura", "frase_diaria.telegram"),
+    "aplicacao": ("frase_diaria.infraestrutura", "frase_diaria.telegram"),
+}
 
 
 def _modulos_das_camadas_puras() -> list[Path]:
@@ -42,4 +46,19 @@ def test_camada_pura_nao_importa_framework_web_nem_sdk_aws(arquivo: Path) -> Non
     assert not proibidas_encontradas, (
         f"{arquivo.relative_to(RAIZ)} importa {sorted(proibidas_encontradas)}; "
         "domínio e aplicação devem permanecer independentes de FastAPI e da AWS"
+    )
+
+
+@pytest.mark.parametrize("arquivo", _modulos_das_camadas_puras(), ids=lambda p: p.name)
+def test_dependencias_internas_apontam_para_o_dominio(arquivo: Path) -> None:
+    camada = arquivo.relative_to(RAIZ).parts[0]
+    importados = _nomes_importados(arquivo)
+    proibidos = DEPENDENCIAS_INTERNAS_PROIBIDAS[camada]
+    encontrados = sorted(
+        nome for nome in importados if any(nome.startswith(prefixo) for prefixo in proibidos)
+    )
+
+    assert not encontrados, (
+        f"{arquivo.relative_to(RAIZ)} importa {encontrados}; "
+        "dependências internas devem apontar para domínio/aplicação, nunca para adaptadores"
     )

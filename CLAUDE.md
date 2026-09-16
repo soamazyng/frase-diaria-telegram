@@ -41,15 +41,15 @@ VERSAO=$(git rev-parse HEAD) make publicar-app   # a cada versão
 O SAM roda via `uvx --from aws-sam-cli sam`: o instalado na máquina (1.125.0) não
 conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 
-`GET /health`: https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
+`GET /health`: https://<API_ID>.execute-api.us-east-1.amazonaws.com/health
 `POST /telegram/webhook`: mesma origem, registrado no Telegram.
 
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
 `telegram-chat-ids` (v2, `.scratch/v2-telegram-bot.md` — lista de destinatários
-autorizados separados por vírgula; inclui pelo menos **672024065**, a conversa
-da usuária; o id do bot é 8340090374 e não serve), `webhook-secret`,
+autorizados separados por vírgula; inclui pelo menos `<TELEGRAM_CHAT_ID_PRINCIPAL>`, a conversa
+da usuária; o id do bot é <TELEGRAM_BOT_ID> e não serve), `webhook-secret`,
 `notion-token` (integração interna, capacidade só de leitura de conteúdo;
 leitura de comentários é opcional e não está habilitada) e `notion-pagina-id`
 (aceita o id puro ou a URL completa da
@@ -172,9 +172,9 @@ Cada mudança deve mapear para um AC da seção 5 da spec. O aceite AWS (entrega
 Já fechadas — implemente conforme descrito, não reabra:
 - **Janela dos extras:** `/frase` antes das 12:00 pode retentar até as 12:00; a partir das 12:00, tentativa única imediata e, falhando, encerra com diagnóstico. Sem fila para o dia seguinte.
 - **Entrega incerta:** tratamento conservador — marcar a parte como incerta e suspender o reenvio automático, aceitando o risco de uma mensagem perdida em troca de não duplicar.
-- **GitHub:** conta `soamazyng`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
+- **GitHub:** conta `<GITHUB_OWNER>`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
 - **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 3.000 do Pro — ~US$34/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
-- **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
+- **AWS:** conta **<AWS_ACCOUNT_ID>**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
 - **Segredos:** usar **SSM Parameter Store** (`SecureString`), que é gratuito. Não usar Secrets Manager: custaria ~US$0,40/segredo/mês sem vantagem aqui.
 - **Sem VPC nem NAT.** Um NAT Gateway custaria ~US$32/mês sozinho e nenhum requisito exige rede privada.
 

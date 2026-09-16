@@ -8,12 +8,22 @@ from enum import Enum
 from typing import ClassVar, Protocol
 
 from frase_diaria.aplicacao.diagnostico import erro_sanitizado
-from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia, Relogio, Sorteio
+from frase_diaria.aplicacao.portas import (
+    ID_DE_MENSAGEM_DESCONHECIDO,
+    ChaveDeParte,
+    ConfirmacaoDeParte,
+    ConflitoDeConcorrencia,
+    ConteudoConfirmado,
+    ErroDeEnvio,
+    IncertezaDeParte,
+    IntencaoDeParte,
+    Relogio,
+    TentativaDeParte,
+)
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
 from frase_diaria.dominio.pedido import EstadoDoPedido, Pedido
-from frase_diaria.dominio.selecao import SemFrase, selecionar
-from frase_diaria.telegram.canal import MESSAGE_ID_DESCONHECIDO, ErroDoTelegram
+from frase_diaria.dominio.selecao import SemFrase, Sorteio, selecionar
 
 _log = logging.getLogger(__name__)
 
@@ -24,28 +34,10 @@ class RepositorioDePedidos(Protocol):
         self, pedido: str, sequencial: int, agora: datetime, duracao: timedelta
     ) -> None: ...
     def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None: ...
-    def registrar_intencao_parte(
-        self, pedido: str, destinatario: int, indice: int, texto: str, instante: datetime
-    ) -> None: ...
-    def confirmar_parte(
-        self,
-        pedido: str,
-        destinatario: int,
-        indice: int,
-        texto: str,
-        message_id: int,
-        instante: datetime,
-        sequencial: int | None = None,
-    ) -> None: ...
-    def marcar_parte_incerta(
-        self,
-        pedido: str,
-        destinatario: int,
-        indice: int,
-        motivo: str,
-        instante: datetime,
-        sequencial: int,
-    ) -> None: ...
+    def registrar_intencao_parte(self, intencao: IntencaoDeParte) -> None: ...
+    def descartar_intencao_parte(self, chave: ChaveDeParte, sequencial: int) -> None: ...
+    def confirmar_parte(self, confirmacao: ConfirmacaoDeParte) -> None: ...
+    def marcar_parte_incerta(self, incerteza: IncertezaDeParte) -> None: ...
     def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]: ...
     def indices_incertos(self, pedido: str, destinatario: int) -> set[int]: ...
     def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]: ...
@@ -245,6 +237,16 @@ class ProcessarPedido:
 
     def _processar(self, pedido: Pedido, sequencial: int) -> Pedido:
         ciclo, versao_ciclo = self.ciclos.carregar()
+        intencoes_legadas, incertas_legadas = self._ambiguidade_sem_snapshot(pedido)
+        if intencoes_legadas or incertas_legadas:
+            motivo = "intenção legada sem snapshot; reenvio automático suspenso"
+            for destinatario, indice in intencoes_legadas:
+                self._registrar_incerteza_da_parte(
+                    _TentativaDeEntrega(pedido, destinatario, sequencial),
+                    indice,
+                    motivo,
+                )
+            return self._marcar_incerto(pedido, motivo, ciclo, versao_ciclo, sequencial)
         escolha = self._escolher(pedido, ciclo)
 
         if escolha is SemFrase.AGUARDANDO_RESERVA:
@@ -272,7 +274,10 @@ class ProcessarPedido:
         if pedido_para_reservar.frase_reservada is None:
             # Ciclo e pedido em uma transação: gravar um sem o outro deixaria uma
             # reserva órfã que nada libera, travando o ciclo para sempre.
-            candidato = pedido_para_reservar.reservar(frase.identidade)
+            candidato = replace(
+                pedido_para_reservar.reservar(frase.identidade),
+                partes_reservadas=frase.partes,
+            )
             try:
                 self.reserva.efetivar(candidato, ciclo, versao_ciclo, sequencial)
             except ConflitoDeConcorrencia as conflito:
@@ -294,14 +299,40 @@ class ProcessarPedido:
         else:
             pedido = pedido_para_reservar
 
-        if pedido.estado is not EstadoDoPedido.ENVIANDO or pedido.total_de_partes != len(
-            frase.partes
+        if (
+            pedido.estado is not EstadoDoPedido.ENVIANDO
+            or pedido.total_de_partes != len(frase.partes)
+            or pedido.partes_reservadas != frase.partes
         ):
             if pedido.estado is not EstadoDoPedido.ENVIANDO:
                 pedido = pedido.iniciar_envio()
-            pedido = replace(pedido, total_de_partes=len(frase.partes))
+            pedido = replace(
+                pedido,
+                total_de_partes=len(frase.partes),
+                partes_reservadas=frase.partes,
+            )
             self.repositorio.salvar(pedido, sequencial)
         return self._entregar(pedido, frase, ciclo, versao_ciclo, sequencial)
+
+    def _ambiguidade_sem_snapshot(
+        self, pedido: Pedido
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+        """Localiza intenções e incertezas de versões sem conteúdo congelado."""
+        if pedido.frase_reservada is None or pedido.partes_reservadas is not None:
+            return [], []
+        intencoes = [
+            (destinatario, indice)
+            for destinatario in pedido.destinatarios
+            for indice in sorted(
+                self.repositorio.indices_intencoes(pedido.identidade, destinatario)
+            )
+        ]
+        incertas = [
+            (destinatario, indice)
+            for destinatario in pedido.destinatarios
+            for indice in sorted(self.repositorio.indices_incertos(pedido.identidade, destinatario))
+        ]
+        return intencoes, incertas
 
     def _escolher(self, pedido: Pedido, ciclo: Ciclo) -> tuple[Frase, Ciclo] | SemFrase:
         """Decide qual frase entregar, respeitando o ciclo.
@@ -319,6 +350,8 @@ class ProcessarPedido:
         por_identidade = {f.identidade: f for f in disponiveis}
 
         if pedido.frase_reservada is not None:
+            if pedido.partes_reservadas is not None and self._algum_destinatario_iniciou(pedido):
+                return Frase(pedido.frase_reservada, pedido.partes_reservadas), ciclo
             frase = por_identidade.get(pedido.frase_reservada)
             if frase is not None:
                 return frase, ciclo
@@ -332,6 +365,14 @@ class ProcessarPedido:
             return escolha
         identidade, ciclo = escolha
         return por_identidade[identidade], ciclo
+
+    def _algum_destinatario_iniciou(self, pedido: Pedido) -> bool:
+        return any(
+            self.repositorio.indices_confirmados(pedido.identidade, destinatario)
+            or self.repositorio.indices_incertos(pedido.identidade, destinatario)
+            or self.repositorio.indices_intencoes(pedido.identidade, destinatario)
+            for destinatario in pedido.destinatarios
+        )
 
     def _algum_destinatario_confirmou(self, pedido: Pedido) -> bool:
         """Se a frase já chegou, confirmada, a pelo menos um destinatário.
@@ -507,10 +548,7 @@ class ProcessarPedido:
             ]
             if not varios_destinatarios:
                 return problematicos[0][1].motivo if problematicos else ""
-            return "; ".join(
-                f"{resultado.motivo} (destinatário {destinatario})"
-                for destinatario, resultado in problematicos
-            )
+            return "; ".join(resultado.motivo for _, resultado in problematicos)
 
         if any(r.desfecho is _DesfechoDoDestinatario.JANELA_ESGOTADA for _, r in resultados):
             return self._encerrar_por_janela_esgotada(pedido, ciclo, versao_ciclo, sequencial)
@@ -590,14 +628,22 @@ class ProcessarPedido:
                 "intenção registrada sem confirmação; reenvio automático suspenso",
             )
 
+        chave = ChaveDeParte(pedido.identidade, tentativa.destinatario, indice)
         self.repositorio.registrar_intencao_parte(
-            pedido.identidade, tentativa.destinatario, indice, texto, self.relogio.agora()
+            IntencaoDeParte(
+                chave=chave,
+                texto=texto,
+                tentativa=TentativaDeParte(self.relogio.agora(), tentativa.sequencial),
+            )
         )
         try:
             message_id = self.canal.enviar_texto(tentativa.destinatario, texto)
-        except ErroDoTelegram as erro:
+        except ErroDeEnvio as erro:
+            if erro.resultado_ambiguo:
+                return self._registrar_incerteza_da_parte(tentativa, indice, str(erro))
+            self.repositorio.descartar_intencao_parte(chave, tentativa.sequencial)
             return self._resultado_da_falha(tentativa, erro)
-        if message_id == MESSAGE_ID_DESCONHECIDO:
+        if message_id == ID_DE_MENSAGEM_DESCONHECIDO:
             return self._registrar_incerteza_da_parte(
                 tentativa,
                 indice,
@@ -605,13 +651,11 @@ class ProcessarPedido:
             )
         # O lease precisa continuar vigente quando a confirmação for persistida.
         self.repositorio.confirmar_parte(
-            pedido.identidade,
-            tentativa.destinatario,
-            indice,
-            texto,
-            message_id,
-            self.relogio.agora(),
-            tentativa.sequencial,
+            ConfirmacaoDeParte(
+                chave=chave,
+                conteudo=ConteudoConfirmado(texto, message_id),
+                tentativa=TentativaDeParte(self.relogio.agora(), tentativa.sequencial),
+            )
         )
         return _ResultadoDoDestinatario(_DesfechoDoDestinatario.CONCLUIDO, "")
 
@@ -619,17 +663,20 @@ class ProcessarPedido:
         self, tentativa: _TentativaDeEntrega, indice: int, motivo: str
     ) -> _ResultadoDoDestinatario:
         self.repositorio.marcar_parte_incerta(
-            tentativa.pedido.identidade,
-            tentativa.destinatario,
-            indice,
-            motivo,
-            self.relogio.agora(),
-            tentativa.sequencial,
+            IncertezaDeParte(
+                chave=ChaveDeParte(
+                    tentativa.pedido.identidade,
+                    tentativa.destinatario,
+                    indice,
+                ),
+                motivo=motivo,
+                tentativa=TentativaDeParte(self.relogio.agora(), tentativa.sequencial),
+            )
         )
         return _ResultadoDoDestinatario(_DesfechoDoDestinatario.INCERTO, motivo)
 
     def _resultado_da_falha(
-        self, tentativa: _TentativaDeEntrega, erro: ErroDoTelegram
+        self, tentativa: _TentativaDeEntrega, erro: ErroDeEnvio
     ) -> _ResultadoDoDestinatario:
         pedido = tentativa.pedido
         if (

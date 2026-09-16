@@ -1,5 +1,10 @@
 # Pipeline vinculado ao SHA e publicação serializada
 
+> **Estado atual (auditoria de 2026-09-16):** o job `publicar` declara o
+> environment `producao`, usa o ARN do papel por variável do repositório e a
+> trust valida environment e branch em claims separados. O texto abaixo sobre
+> a ausência de environment descreve apenas a primeira implantação do ticket.
+
 ## Comportamento
 
 Todo push em `develop` dispara `.github/workflows/pr-develop-main.yml`, agora com
@@ -67,8 +72,8 @@ errado nos dois sentidos. Agora:
   deploy no meio deixaria a stack pela metade; um push novo enfileira atrás
   deste, nunca o interrompe.
 
-**Sem `environment:` do Actions no job `publicar` — decisão deliberada, não
-esquecimento.** A trust policy de `frase-diaria-publicacao` (ticket 16,
+**Na primeira implantação, o job ainda não declarava `environment:`.** A trust
+policy de `frase-diaria-publicacao` (ticket 16,
 `infra/bootstrap.yaml`) restringe o claim `sub` do OIDC a
 `repo:.../ref:refs/heads/develop`. Declarar `environment: producao` no job
 mudaria esse claim para o formato `repo:.../environment:producao`, e a
@@ -159,7 +164,7 @@ mudança futura de formato. Aplicado nos quatro pontos encontrados.
 ## Publicação real — primeira execução
 
 Após autorização explícita da usuária, o commit foi enviado para `develop`
-de verdade (`gh run` `34260448739`). `garantir-pr`, `verificar` e `construir`
+de verdade (`gh run` `<GITHUB_RUN_ID>`). `garantir-pr`, `verificar` e `construir`
 passaram; `publicar` **falhou** na conferência de checksum, antes de
 qualquer credencial AWS ser configurada — ou seja, o mecanismo de segurança
 funcionou exatamente como desenhado: nenhuma mutação chegou a acontecer.
@@ -176,7 +181,7 @@ sobre o artefato baixado, portanto não batia.
 
 Confirmado passo a passo, não só lido no log: baixado o artefato exato do
 run com `gh run download`, reproduzido localmente o mesmo checksum
-`58ae56d8...` que o job `publicar` reportou (usando o mesmo prefixo de
+`<COMMIT_SHA>` que o job `publicar` reportou (usando o mesmo prefixo de
 caminho do script), e localizados os quatro `.lock` que só existiam no
 build local, ausentes no artefato baixado.
 
@@ -219,18 +224,18 @@ imprime só os claims decodificados — nunca o token inteiro. O `sub` real
 emitido:
 
 ```
-repo:soamazyng@443219/frase-diaria-telegram@1359588301:ref:refs/heads/develop
+repo:<GITHUB_OWNER>@<GITHUB_OWNER_ID>/frase-diaria-telegram@<GITHUB_REPOSITORY_ID>:ref:refs/heads/develop
 ```
 
 — o formato imutável baseado em IDs, exatamente como a pesquisa alertava,
-divergindo do formato `repo:soamazyng/frase-diaria-telegram:ref:refs/heads/develop`
+divergindo do formato `repo:<GITHUB_OWNER>/frase-diaria-telegram:ref:refs/heads/develop`
 que a trust policy do ticket 16 assumia. `aud` continuava `sts.amazonaws.com`,
 sem mudança.
 
 **Correção em `infra/bootstrap.yaml`:** o parâmetro único `RepositorioGitHub`
 ("owner/repo") virou quatro parâmetros — `ProprietarioGitHub`,
 `IdDoProprietarioGitHub`, `NomeDoRepositorio`, `IdDoRepositorio` — e a
-condição `sub` das duas roles (`PapelDePublicacao`, `PapelDeInfraestrutura`)
+condição `sub` das duas roles (`PapelDePublicacao`, `PapelDeReconciliacao`)
 passou a interpolar `${ProprietarioGitHub}@${IdDoProprietarioGitHub}/${NomeDoRepositorio}@${IdDoRepositorio}`.
 Revisado por change set antes de aplicar: `Modify`/`Replacement: False` nas
 duas roles, nada mais na stack afetado (confirmado, não presumido). Aplicado
@@ -333,8 +338,8 @@ Conferido diretamente contra a AWS e o GitHub reais, não só pelo log do
 job:
 
 ```
-gh api .../deployments/6336765673/statuses  →  state: success
-GET /health                                 →  {"situacao":"ok","versao":"0cd19f86fcf5d1b65f6d9900db63fd8cda71fdb0",...}
+gh api .../deployments/<DEPLOYMENT_ID>/statuses  →  state: success
+GET /health                                 →  {"situacao":"ok","versao":"<COMMIT_SHA>",...}
 ```
 
 `versao` bate exatamente com o SHA do commit publicado — AC21 exercitado
@@ -360,7 +365,7 @@ contra o sistema real, não presumido.
   hardening.
 
 **Publicação real, autorizada explicitamente pela usuária, executada em seis
-rodadas até verde** (`git log` de `c2e4e88` a `0cd19f8`, todas nesta sessão,
+rodadas até verde** (`git log` de `<COMMIT_SHA>` a `<COMMIT_SHA>`, todas nesta sessão,
 2026-09-08). Cada falha real corrigida em sequência, documentada acima com
 o log/evidência que a comprovou — nenhuma delas simulada ou presumida:
 

@@ -12,7 +12,7 @@ from frase_diaria.telegram.atualizacao import interpretar
 
 
 def _mensagem(
-    texto: str = "/start", chat_id: int = 8340090374, tipo: str = "private"
+    texto: str = "/start", chat_id: int = 111111, tipo: str = "private"
 ) -> dict[str, Any]:
     return {
         "update_id": 10001,
@@ -29,7 +29,7 @@ def test_le_update_id_conversa_e_comando() -> None:
 
     assert atualizacao is not None
     assert atualizacao.update_id == 10001
-    assert atualizacao.conversa.chat_id == 8340090374
+    assert atualizacao.conversa.chat_id == 111111
     assert atualizacao.conversa.tipo == "private"
     assert atualizacao.comando is Comando.START
 
@@ -76,7 +76,7 @@ def test_update_sem_update_id_e_irrelevante() -> None:
 
 def test_mensagem_sem_texto_e_relevante_mas_desconhecida() -> None:
     # Uma foto enviada na conversa autorizada merece a ajuda curta, não silêncio.
-    sem_texto = {"update_id": 9, "message": {"chat": {"id": 8340090374, "type": "private"}}}
+    sem_texto = {"update_id": 9, "message": {"chat": {"id": 111111, "type": "private"}}}
 
     atualizacao = interpretar(sem_texto)
 

@@ -51,7 +51,7 @@ class ReconciliarPendencias:
                 # A idempotência é por identidade (dia local — v2: um único
                 # pedido para todos os destinatários, não mais por conversa):
                 # a próxima varredura, cinco minutos depois, tenta de novo.
-                _log.exception(
+                _log.error(
                     "falha ao materializar a diária ausente; próxima varredura tenta de novo"
                 )
 
@@ -64,7 +64,7 @@ class ReconciliarPendencias:
                 # Uma falha pontual de despacho não pode travar a varredura dos
                 # demais pedidos vencidos; o pedido permanece persistido e volta
                 # a aparecer na próxima varredura.
-                _log.exception("falha ao acordar pedido vencido; próxima varredura tenta de novo")
+                _log.error("falha ao acordar pedido vencido; próxima varredura tenta de novo")
         return acordados
 
     def _dentro_da_janela_de_recuperacao(self, agora: datetime) -> bool:

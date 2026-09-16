@@ -1,19 +1,18 @@
 # Recuperação da versão anterior
 
+> **Estado atual (auditoria de 2026-09-16):** cada artefato verificado também é
+> arquivado no bucket S3 do projeto sob uma chave derivada do SHA. O cache do
+> GitHub Actions continua por 14 dias; depois disso, recuperação e reconciliação
+> usam o arquivo durável no S3, sempre conferindo `CHECKSUM.txt`.
+
 ## Escopo desta entrega
 
 A spec (4.12) e o checklist do ticket cobrem três gatilhos de recuperação:
 **falha de deploy**, **falha de diagnóstico pós-publicação** e **fechamento
-de PR sem merge**. Esta entrega cobre os dois primeiros — os únicos
-síncronos, presos ao mesmo job `publicar` e à mesma exclusão mútua já
-existentes desde o ticket 18. O terceiro (AC25) fica para uma próxima
-sessão: recuperá-lo exige que um workflow disparado por `pull_request`
-assuma o papel de publicação, e o claim `sub` do OIDC para esse tipo de
-evento é `repo:DONO@ID/REPO@ID:pull_request` — sem branch, diferente do
-`ref:refs/heads/develop` que a trust policy exige hoje (verificado contra a
-documentação oficial do GitHub, não presumido). Ampliar essa confiança é
-uma decisão de segurança que merece ser tratada isolada, não emendada
-numa entrega já grande. Ver "Próximo passo".
+de PR sem merge**. O job `publicar` cobre os dois primeiros, que são
+síncronos. O reconciliador do ticket 20 cobre o terceiro a partir de `main`,
+sob a mesma exclusão mútua de produção e com um papel próprio. Assim o fluxo
+não precisa ampliar a confiança OIDC para eventos `pull_request`.
 
 Decisão confirmada pela usuária: o "desabilitar novos envios" da spec é
 resolvido só por infraestrutura (desligar o `ScheduleV2` da diária via
@@ -40,8 +39,8 @@ deploy bem-sucedido mas sistema doente):
    achar a última com `state=success`. Essa API já É o marco "publicação
    saudável anterior à tentativa" (checklist do ticket 19) — nenhum
    manifesto novo foi criado.
-2. **Recuperar** — baixa o artefato **já construído** daquele SHA (de uma
-   execução passada deste mesmo workflow, via `actions/artifacts` API),
+2. **Recuperar** — baixa o artefato **já construído** daquele SHA (do cache do
+   Actions ou do arquivo durável no S3),
    confere o checksum, e publica com `make publicar-app-artefato
    VERSAO=<sha antigo>` — sem reconstruir dependências (spec, 4.12). Registra
    uma implantação própria para essa recuperação.
@@ -51,10 +50,10 @@ deploy bem-sucedido mas sistema doente):
    deploy sem versão anterior" — ou a própria recuperação falha): desliga o
    agendamento diário e abre uma issue no GitHub com o procedimento manual.
 
-O marco "versão estável aceita em `main`" não precisou de nenhum mecanismo
-novo: é literalmente o HEAD de `main`, consultável a qualquer momento via
-`gh api repos/.../git/ref/heads/main` — só passa a ser usado quando a
-recuperação do PR fechado (AC25) for implementada.
+O marco "versão estável aceita em `main`" não precisou de manifesto novo. O
+reconciliador consulta o HEAD de `main`; quando ele é um merge commit, usa o
+segundo parent, que é o SHA de `develop` efetivamente testado e publicado.
+Esse marco implementa a recuperação de PR fechado do AC25.
 
 ## Decisão técnica
 
@@ -65,12 +64,11 @@ sem esforço adicional — implantações `success` (ticket 18) e o HEAD de
 `main` (git, sempre a fonte de verdade) — desenhar um manifesto paralelo
 duplicaria conhecimento (G5) sobre o mesmo fato.
 
-**Artefato com retenção de 14 dias, não 1.** O ticket 18 deixou 1 dia de
+**Cache do Actions por 14 dias e arquivo durável no S3.** O ticket 18 deixou 1 dia de
 propósito (o artefato só precisava sobreviver até o job seguinte do mesmo
 run). A recuperação agora depende de baixar um artefato de uma execução
-*passada* — sem ele, "sem reconstruir dependências" vira impossível depois
-de 24h. 14 dias casa com a retenção de logs já padronizada no projeto
-(`RetencaoDeLogsEmDias`, `infra/aplicacao.yaml`), sem inventar outro prazo.
+*passada*. A auditoria manteve 14 dias como cache rápido e adicionou o S3 para
+que "sem reconstruir dependências" continue possível após esse prazo.
 
 **Composite action, não duplicar o script duas vezes.** O diagnóstico
 precisa rodar duas vezes por tentativa (contra o SHA que falhou, contra o
@@ -121,7 +119,7 @@ gap novo foi encontrado ao desenhar esta parte.
   por que a API de Deployments substitui um manifesto, por que o AC25 fica
   de fora).
 - **Caminho feliz exercitado de verdade, ao vivo:** o primeiro push real
-  com estas mudanças (`gh run` `34285100609`) publicou de ponta a ponta —
+  com estas mudanças (`gh run` `<GITHUB_RUN_ID>`) publicou de ponta a ponta —
   `sam deploy` real, diagnóstico aprovado pela composite action nova, e os
   seis passos novos de recuperação (`Localizar última publicação
   saudável`, `Recuperar`, `Verificar publicação recuperada`, `Registrar
@@ -171,7 +169,7 @@ Deploy real, sem risco à funcionalidade do bot.
 
 **O que aconteceu:** o diagnóstico reprovou como esperado (mismatch de
 versão). "Localizar última publicação saudável" rodou e achou o SHA certo
-(`e26cca1...`). Mas **"Recuperar publicação saudável anterior" nunca
+(`<COMMIT_SHA>`). Mas **"Recuperar publicação saudável anterior" nunca
 rodou** — ficou `skipped` mesmo com o SHA já localizado — e a cadeia caiu
 direto em "Desabilitar agendamento diário", que **desabilitou de verdade**
 o `ScheduleV2` da diária em produção, e "Registrar diagnóstico no GitHub",
@@ -190,7 +188,7 @@ erro — é uma regra de semântica do runner, não de sintaxe.
 **Resposta imediata:** o agendamento foi reabilitado manualmente
 (`aws scheduler update-schedule`, conferido `ENABLED` antes de qualquer
 outra coisa), os dois `if:` corrigidos com `always()`, o `Versao` de teste
-revertido, tudo em um único commit (`904d85c`) — publicado e confirmado:
+revertido, tudo em um único commit (`<COMMIT_SHA>`) — publicado e confirmado:
 `/health` voltou a relatar o SHA real, agendamento `ENABLED`. A issue #3
 foi fechada com o relato do que aconteceu.
 
@@ -219,8 +217,8 @@ rodou de verdade:
 ```
 ✓ sam deploy (artefato já construído)          # publica com o rótulo errado
 X Verificar saúde...                            # diagnóstico reprova, como esperado
-✓ Localizar última publicação saudável          # acha 05655cd (o SHA correto)
-✓ Recuperar publicação saudável anterior        # baixa o artefato de 05655cd, checksum ok, sam deploy ok
+✓ Localizar última publicação saudável          # acha <COMMIT_SHA> (o SHA correto)
+✓ Recuperar publicação saudável anterior        # baixa o artefato de <COMMIT_SHA>, checksum ok, sam deploy ok
 ✓ Verificar publicação recuperada               # diagnóstico pós-recuperação aprova
 ✓ Registrar resultado da recuperação            # implantação marcada success
 - Desabilitar agendamento diário                # skipped — corretamente, a recuperação funcionou
@@ -229,11 +227,11 @@ X Registrar resultado da publicação             # o commit de teste continua f
 ```
 
 Confirmado contra o sistema real, não só pelo log do job:
-- `aws cloudformation ... Outputs.VersaoPublicada` = `05655cd...` (o SHA
+- `aws cloudformation ... Outputs.VersaoPublicada` = `<COMMIT_SHA>` (o SHA
   recuperado, não o rótulo quebrado) logo após o passo "Recuperar".
-- `GET /health` respondendo `{"situacao":"ok","versao":"05655cd..."}`.
+- `GET /health` respondendo `{"situacao":"ok","versao":"<COMMIT_SHA>"}`.
 - A implantação de recuperação (`gh api .../deployments`) com descrição
-  "recuperação automática após falha em a4250f6..." e status final
+  "recuperação automática após falha em <COMMIT_SHA>" e status final
   `success`, `description: "diagnóstico pós-recuperação: success"`.
 - `aws scheduler get-schedule ... State` permaneceu `ENABLED` durante todo
   o teste — a recuperação bem-sucedida nunca chegou a acionar o
@@ -247,24 +245,13 @@ aplicados em seguida; pipeline confirmado voltando ao normal.
 
 ## Review
 
-Não se aplica `/code-review` de Standards/Spec em dois eixos nem
-`security-review` de aplicação — sem código Python nesta entrega, só
-workflow YAML e uma composite action.
+O fluxo foi revisto nos eixos Standards e Spec e passou também pela revisão de
+segurança de GitHub Actions. A auditoria de 2026-09-16 adicionou o arquivo
+durável no S3 e manteve checksum independente antes de qualquer recuperação.
 
 ## Próximo passo
 
-Em aberto, nesta ordem de dependência:
-
-1. **Repetir o teste de fogo** com o bug do `always()` já corrigido, para
-   provar de verdade o passo `Recuperar publicação saudável anterior` (o
-   único que ainda não rodou) — decisão da usuária sobre quando.
-2. **AC25 — recuperação em PR fechado sem merge.** Precisa de uma decisão
-   de segurança específica: ampliar a trust policy do papel de publicação
-   para aceitar também o `sub` de eventos `pull_request` (perdendo a
-   precisão de branch que o `ref:refs/heads/develop` atual garante), ou
-   desenhar um caminho que não exija OIDC direto nesse trigger — por
-   exemplo, deixar esse caso para o **ticket 20** (Reconciliador), que já
-   está no seu escopo declarado ("cobrindo... falha do evento de fechamento
-   do PR") e roda a partir de `main` com um papel (`frase-diaria-infraestrutura`)
-   cuja trust policy já é compatível com esse branch.
-3. Depois disso, ticket 20 segue bloqueado por este (19) como já estava.
+Repetir periodicamente o teste de recuperação em produção, com uma candidata
+controlada, para confirmar também o caminho durável do S3 depois que o cache do
+Actions tiver expirado. A recuperação de PR fechado do AC25 está implementada
+pelo ticket 20 e não bloqueia mais este fluxo.

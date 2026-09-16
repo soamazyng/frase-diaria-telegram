@@ -1,8 +1,15 @@
+import http.client
 import json
 import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+
+from frase_diaria.aplicacao.portas import (
+    ID_DE_MENSAGEM_DESCONHECIDO,
+    ClassificacaoDoErroDeEnvio,
+    ErroDeEnvio,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -10,7 +17,7 @@ BASE = "https://api.telegram.org"
 
 # A Bot API respondeu ok mas não devolveu identificador. A mensagem foi entregue;
 # só não há como referenciá-la depois.
-MESSAGE_ID_DESCONHECIDO = 0
+MESSAGE_ID_DESCONHECIDO = ID_DE_MENSAGEM_DESCONHECIDO
 
 # Excesso de taxa e indisponibilidade do lado do Telegram: uma nova tentativa
 # tem chance real de dar certo. Credencial inválida, bot bloqueado e outros 4xx
@@ -18,27 +25,8 @@ MESSAGE_ID_DESCONHECIDO = 0
 _CODIGOS_TRANSITORIOS = frozenset({429, 500, 502, 503, 504})
 
 
-class ErroDoTelegram(RuntimeError):
-    """Falha ao falar com a Bot API, já sanitizada.
-
-    Nunca carrega a URL da chamada: o token do bot faz parte dela.
-
-    `transitorio` diz se vale a pena retentar (AC13); `retry_after_s`, quando a
-    Bot API o informou, é o quanto esperar antes de tentar de novo.
-    """
-
-    def __init__(
-        self,
-        mensagem: str,
-        *,
-        codigo_http: int | None = None,
-        retry_after_s: float | None = None,
-        transitorio: bool = False,
-    ) -> None:
-        super().__init__(mensagem)
-        self.codigo_http = codigo_http
-        self.retry_after_s = retry_after_s
-        self.transitorio = transitorio
+class ErroDoTelegram(ErroDeEnvio):
+    """Falha sanitizada específica da Bot API."""
 
 
 @dataclass(frozen=True)
@@ -74,14 +62,27 @@ class TelegramHttp:
             # A URL do erro contém o token: reporta só o código.
             raise ErroDoTelegram(
                 f"Bot API respondeu HTTP {erro.code}",
-                codigo_http=erro.code,
-                retry_after_s=_retry_after_do_corpo_do_erro(erro),
-                transitorio=erro.code in _CODIGOS_TRANSITORIOS,
+                ClassificacaoDoErroDeEnvio(
+                    codigo_http=erro.code,
+                    retry_after_s=_retry_after_do_corpo_do_erro(erro),
+                    transitorio=erro.code in _CODIGOS_TRANSITORIOS,
+                ),
             ) from None
         except urllib.error.URLError:
             # A mensagem original pode embutir a URL: descarta-se o encadeamento.
             # Uma falha de rede é, por natureza, transitória.
-            raise ErroDoTelegram("falha de rede ao chamar a Bot API", transitorio=True) from None
+            raise ErroDoTelegram(
+                "falha de rede ao chamar a Bot API",
+                ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+            ) from None
+        except (http.client.HTTPException, TimeoutError, OSError):
+            # Há falhas de transporte que urllib não embrulha em URLError
+            # (RemoteDisconnected foi observada em produção). Sem resposta não
+            # sabemos se o Telegram aceitou o corpo; repetir cegamente duplica.
+            raise ErroDoTelegram(
+                "conexão encerrada sem resposta da Bot API",
+                ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+            ) from None
 
         try:
             carga = json.loads(bruto)
@@ -89,19 +90,36 @@ class TelegramHttp:
             # Um proxy pode devolver HTML com status 200. Sem este tratamento o
             # ValueError escaparia e o pedido ficaria preso, sem tentativa. Uma
             # resposta ilegível também é, por natureza, transitória.
-            raise ErroDoTelegram("Bot API devolveu resposta ilegível", transitorio=True) from None
+            raise ErroDoTelegram(
+                "Bot API devolveu resposta ilegível",
+                ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+            ) from None
+
+        if not isinstance(carga, dict):
+            raise ErroDoTelegram(
+                "Bot API devolveu resposta com formato inesperado",
+                ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+            )
 
         if not carga.get("ok"):
             codigo = carga.get("error_code")
             codigo = codigo if isinstance(codigo, int) else None
             raise ErroDoTelegram(
-                f"Bot API recusou: {carga.get('description', 'sem descrição')}",
-                codigo_http=codigo,
-                retry_after_s=_retry_after_do_corpo(carga),
-                transitorio=codigo in _CODIGOS_TRANSITORIOS,
+                "Bot API recusou a solicitação",
+                ClassificacaoDoErroDeEnvio(
+                    codigo_http=codigo,
+                    retry_after_s=_retry_after_do_corpo(carga),
+                    transitorio=codigo in _CODIGOS_TRANSITORIOS,
+                ),
             )
 
-        message_id = carga.get("result", {}).get("message_id")
+        resultado = carga.get("result")
+        if not isinstance(resultado, dict):
+            raise ErroDoTelegram(
+                "Bot API devolveu resultado com formato inesperado",
+                ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+            )
+        message_id = resultado.get("message_id")
         if not isinstance(message_id, int):
             # A mensagem foi entregue: negar isso liberaria a reserva de uma
             # frase que a usuária já recebeu.

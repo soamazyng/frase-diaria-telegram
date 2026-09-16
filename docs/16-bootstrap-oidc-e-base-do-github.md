@@ -1,10 +1,17 @@
 # Bootstrap OIDC AWS e base do GitHub
 
+> **Estado atual (auditoria de 2026-09-16):** os jobs privilegiados usam o
+> environment `producao`; as trusts exigem ao mesmo tempo esse environment e o
+> `ref` exato (`develop` para publicação, `main` para reconciliação). O segundo
+> papel chama-se `frase-diaria-reconciliacao`. ARNs e o bucket de artefatos são
+> configurados em variáveis do repositório e não ficam versionados. Os relatos
+> abaixo preservam o contexto histórico do ticket 16.
+
 ## Comportamento
 
 O GitHub Actions já pode assumir papel na AWS com credenciais temporárias,
 sem nenhuma chave de longo prazo guardada no repositório. Três recursos
-existem agora na conta `712790115760` (`us-east-1`), publicados uma única
+existem agora na conta `<AWS_ACCOUNT_ID>` (`us-east-1`), publicados uma única
 vez, pela identidade já autorizada `user/aws-developer-group`:
 
 - **Provedor OIDC** — `token.actions.githubusercontent.com`, com
@@ -12,14 +19,15 @@ vez, pela identidade já autorizada `user/aws-developer-group`:
 - **`frase-diaria-publicacao`** — assumido pelo workflow de push em
   `develop` (tickets 17/18, ainda não construídos); publica a stack
   `frase-diaria-app`.
-- **`frase-diaria-infraestrutura`** — assumido pelo workflow periódico de
+- **`frase-diaria-reconciliacao`** — assumido pelo workflow periódico de
   reconciliação de publicações (ticket 20, ainda não construído); por
   enquanto só lê o estado da stack, porque a lógica de recuperação em si
   ainda não existe.
 
-Os dois papéis confiam exclusivamente em `soamazyng/frase-diaria-telegram`,
-validam `aud=sts.amazonaws.com` e restringem `sub` à branch exata que cada um
-deve assumir (`develop` para publicação, `main` para infraestrutura) — nunca
+Os dois papéis confiam exclusivamente em `<GITHUB_OWNER>/frase-diaria-telegram`,
+validam `aud=sts.amazonaws.com`, restringem `sub` ao environment de produção e
+validam a branch exata numa condição separada (`develop` para publicação,
+`main` para reconciliação) — nunca
 `StringLike` com curinga, porque os dois valores são conhecidos e exatos
 (AC28). `id-token: write` não foi concedido a workflow nenhum ainda, porque
 nenhum workflow existe: fica registrado aqui como responsabilidade de quem
@@ -84,12 +92,12 @@ não existe.
 - `aws cloudformation validate-template` no `infra/bootstrap.yaml`: OK.
 - Publicação real: `aws cloudformation deploy --stack-name
   frase-diaria-bootstrap` — `CREATE_COMPLETE` nos três recursos
-  (`ProvedorOIDCDoGitHub`, `PapelDePublicacao`, `PapelDeInfraestrutura`).
+  (`ProvedorOIDCDoGitHub`, `PapelDePublicacao`, `PapelDeReconciliacao`).
   Executado por `user/aws-developer-group`, a identidade já verificada no
   ticket 01.
-- Nenhum segredo foi tocado: o bootstrap não usa SSM, não gera chave alguma
-  — os ARNs dos papéis não são segredo e podem aparecer nos workflows em
-  texto puro (AC28).
+- Nenhum segredo foi tocado: o bootstrap não usa SSM nem gera chave alguma.
+  Identificadores operacionais, inclusive ARNs, ficam fora dos arquivos
+  versionados conforme a política atual do repositório.
 - Políticas efetivas do GitHub verificadas via `gh api`:
   `actions/permissions` → Actions habilitado, `allowed_actions: all`;
   `actions/permissions/workflow` → `default_workflow_permissions: read`,
@@ -123,7 +131,7 @@ conta/região — a conta é de projeto único hoje, então o risco concreto atu
 era zero, mas a policy em si não impunha esse limite, o que contraria a
 exigência do `AGENTS.md` de toda ação-curinga ter uma condição que reduza o
 alcance. Corrigido: as ações que operam sobre a API já existente
-(`GET`/`PUT`/`PATCH`/`DELETE`/`TagResource`) ganharam a condição
+(`GET`/`PUT`/`PATCH`/`DELETE`) ganharam a condição
 `aws:ResourceTag/aws:cloudformation:stack-name = frase-diaria-app` — tag que
 o próprio CloudFormation já aplica automaticamente, sem exigir nenhuma
 mudança em `infra/aplicacao.yaml`. `apigateway:POST` (criação de

@@ -1,15 +1,16 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from frase_diaria.aplicacao.portas import CriadorDePedidos, Relogio
+from frase_diaria.aplicacao.portas import CriadorDePedidos, ErroDeEnvio, Relogio
+from frase_diaria.dominio.atualizacao import Atualizacao
 from frase_diaria.dominio.autorizacao import PoliticaDeAcesso, Recusa
 from frase_diaria.dominio.comando import Comando
 from frase_diaria.dominio.pedido import Origem, Pedido
 from frase_diaria.dominio.tempo import politica_do_extra
-from frase_diaria.telegram.atualizacao import Atualizacao, interpretar
 
 _log = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ class RepositorioDeComandos(Protocol):
         """Registra o comando. Devolve False se este update já era conhecido."""
         ...
 
+    def reivindicar_acao(self, update_id: int) -> bool: ...
+    def liberar_acao(self, update_id: int) -> None: ...
+    def marcar_acao_concluida(self, update_id: int) -> None: ...
+
 
 class CanalDeTelegram(Protocol):
     def enviar_texto(self, chat_id: int, texto: str) -> int: ...
@@ -47,6 +52,10 @@ class Despachante(Protocol):
     def pedir_status(self, chat_id: int) -> None:
         """Tenta pôr o worker para montar e enviar o relatório de `/status`."""
         ...
+
+
+class InterpretadorDeAtualizacao(Protocol):
+    def __call__(self, corpo: dict[str, Any]) -> Atualizacao | None: ...
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,7 @@ class ReceberComando:
     relogio: Relogio
     pedidos: CriadorDePedidos
     despachante: Despachante
+    interpretar: InterpretadorDeAtualizacao
     bot: str = "principal"
 
     def aceita_segredo(self, segredo: str | None) -> bool:
@@ -78,7 +88,7 @@ class ReceberComando:
             _log.warning("entrada recusada: %s", Recusa.SEGREDO_INVALIDO.value)
             return Desfecho.IGNORADO
 
-        atualizacao = interpretar(corpo)
+        atualizacao = self.interpretar(corpo)
         if atualizacao is None:
             # Não é mensagem de conversa. Reconhecer e ignorar: devolver erro
             # faria o Telegram reentregar para sempre algo que nunca interessa.
@@ -95,7 +105,7 @@ class ReceberComando:
         except Exception:
             # Devolver erro faz o Telegram reentregar. Responder à usuária agora
             # deixaria um comando respondido porém não registrado, que voltaria.
-            _log.exception("falha ao registrar comando; pedindo reentrega")
+            _log.error("falha ao registrar comando; pedindo reentrega")
             return Desfecho.NAO_PERSISTIDO
 
         if atualizacao.comando is Comando.FRASE:
@@ -105,44 +115,58 @@ class ReceberComando:
             try:
                 self._pedir_frase(atualizacao.update_id, atualizacao.conversa.chat_id)
             except Exception:
-                _log.exception("falha ao criar pedido; pedindo reentrega")
+                _log.error("falha ao criar pedido; pedindo reentrega")
                 return Desfecho.NAO_PERSISTIDO
             return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
 
-        if not novo:
+        if atualizacao.comando is Comando.STATUS:
+            return self._executar_acao(
+                atualizacao.update_id,
+                novo,
+                lambda: self.despachante.pedir_status(atualizacao.conversa.chat_id),
+            )
+
+        return self._executar_acao(
+            atualizacao.update_id,
+            novo,
+            lambda: self.canal.enviar_texto(atualizacao.conversa.chat_id, AJUDA),
+        )
+
+    def _executar_acao(self, update_id: int, novo: bool, acao: Callable[[], object]) -> Desfecho:
+        """Reivindica uma ação antes do efeito externo e nunca repete ambiguidade."""
+        try:
+            reivindicada = self.repositorio.reivindicar_acao(update_id)
+        except Exception:
+            _log.error("falha ao reivindicar ação do comando; pedindo reentrega")
+            return Desfecho.NAO_PERSISTIDO
+        if not reivindicada:
             return Desfecho.JA_CONHECIDO
 
-        if atualizacao.comando is Comando.STATUS:
-            self._pedir_status(atualizacao.conversa.chat_id)
-            return Desfecho.ACEITO
-
-        self._responder_ajuda(atualizacao.conversa.chat_id)
-        return Desfecho.ACEITO
-
-    def _responder_ajuda(self, chat_id: int) -> None:
-        """Envia a ajuda em melhor esforço.
-
-        Falhar aqui não vira 5xx: a reentrega encontraria o comando já
-        registrado, devolveria sucesso sem responder, e a usuária nunca receberia
-        nada. Como repetir `/start` é trivial e não consome frase, registrar a
-        falha e devolver 200 é melhor que uma reentrega que não pode dar certo.
-        """
         try:
-            self.canal.enviar_texto(chat_id, AJUDA)
+            acao()
+        except ErroDeEnvio as erro:
+            if erro.resultado_ambiguo:
+                _log.error("resultado externo ambíguo; ação não será repetida automaticamente")
+                return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
+            try:
+                self.repositorio.liberar_acao(update_id)
+            except Exception:
+                _log.error("falha ao liberar ação recusada; ação permanece suspensa")
+                return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
+            return Desfecho.NAO_PERSISTIDO
         except Exception:
-            _log.exception("falha ao enviar a ajuda; a usuária pode repetir o comando")
+            # Uma conexão pode cair depois que Telegram ou Lambda aceitou a
+            # chamada. A reivindicação persistida suspende o reenvio cego.
+            _log.error("resultado externo desconhecido; ação não será repetida automaticamente")
+            return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
 
-    def _pedir_status(self, chat_id: int) -> None:
-        """Pede ao worker que monte e envie o relatório de `/status`.
-
-        Igual à ajuda: melhor esforço. O comando já está registrado, então
-        devolver erro aqui só faria o Telegram reentregar algo já reconhecido
-        — e a reentrega cairia direto em `JA_CONHECIDO`, sem despachar de novo.
-        """
         try:
-            self.despachante.pedir_status(chat_id)
+            self.repositorio.marcar_acao_concluida(update_id)
         except Exception:
-            _log.exception("falha ao pedir o status ao worker; sem reconciliador para isto")
+            # O efeito externo já ocorreu e a reivindicação continua gravada.
+            # Uma reentrega encontra o claim e não duplica a ação.
+            _log.error("falha ao confirmar ação; reivindicação impede duplicidade")
+        return Desfecho.ACEITO if novo else Desfecho.JA_CONHECIDO
 
     def _pedir_frase(self, update_id: int, chat_id: int) -> None:
         """Cria o pedido extra e tenta acordar o worker.
@@ -168,4 +192,4 @@ class ReceberComando:
         except Exception:
             # O pedido está persistido; o reconciliador o alcançará. Falhar aqui
             # faria o Telegram reentregar um comando já registrado.
-            _log.exception("falha ao acordar o worker; pedido permanece persistido")
+            _log.error("falha ao acordar o worker; pedido permanece persistido")

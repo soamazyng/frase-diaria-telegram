@@ -111,6 +111,7 @@ class Pedido:
     # própria tentativa única rodar.
     tentativa_unica: bool = False
     total_de_partes: int | None = None
+    partes_reservadas: tuple[str, ...] | None = None
     destinatarios_com_falha: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:

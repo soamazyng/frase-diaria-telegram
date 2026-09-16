@@ -80,13 +80,21 @@ class RepositorioDeColecaoDynamo:
             _log.info("snapshot mais recente já persistido; esta gravação foi descartada")
 
     def registrar_tentativa(self, tentativa: TentativaDeSincronizacao) -> None:
+        instante = em_utc(tentativa.instante).isoformat(timespec="microseconds")
         item: dict[str, Any] = {
             **self.CHAVE_DA_TENTATIVA,
-            "instante": em_utc(tentativa.instante).isoformat(timespec="microseconds"),
+            "instante": instante,
         }
         if tentativa.erro is not None:
             item["erro"] = tentativa.erro
-        self.tabela.put_item(Item=item)
+        try:
+            self.tabela.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(instante) OR instante <= :novo",
+                ExpressionAttributeValues={":novo": instante},
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            _log.info("tentativa mais recente já persistida; esta gravação foi descartada")
 
     def ultima_tentativa(self) -> TentativaDeSincronizacao | None:
         item = self.tabela.get_item(Key=self.CHAVE_DA_TENTATIVA, ConsistentRead=True).get("Item")
@@ -137,6 +145,8 @@ def _item_de_trecho(trecho: Trecho) -> dict[str, Any]:
         "sublinhado": trecho.sublinhado,
         "codigo": trecho.codigo,
         "link": trecho.link,
+        "cor": trecho.cor,
+        "fundo": trecho.fundo,
     }
 
 
@@ -149,4 +159,6 @@ def _trecho_de_item(item: dict[str, Any]) -> Trecho:
         sublinhado=bool(item.get("sublinhado")),
         codigo=bool(item.get("codigo")),
         link=item.get("link"),
+        cor=str(item.get("cor", "default")),
+        fundo=str(item.get("fundo", "default")),
     )
