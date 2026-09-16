@@ -8,14 +8,14 @@ de fixtures, no ambiente de produção único do projeto.
 25 — Diária com múltiplos destinatários: entrega compartilhada e falhas independentes;
 26 — `/status` reporta a entrega do próprio destinatário.
 
-**Status:** ready-for-agent — indicação documental, sem label aplicada a um rastreador.
+**Status:** concluído em 2026-09-16 — ver `docs/27-aceite-real-do-irmao.md`
 
-- [ ] Chat_id do irmão cadastrado no SSM pela usuária, fora da conversa com o agente
+- [x] Chat_id do irmão cadastrado no SSM pela usuária, fora da conversa com o agente
       (rules.md).
-- [ ] Irmão recebe a diária real, com o mesmo conteúdo entregue à usuária no mesmo dia.
-- [ ] Irmão usa `/frase` e recebe uma frase extra própria.
-- [ ] Irmão usa `/status` e recebe o diagnóstico da própria entrega.
-- [ ] Verificação não consome frase adicional além do necessário para o aceite, seguindo
+- [x] Irmão recebe a diária real, com o mesmo conteúdo entregue à usuária no mesmo dia.
+- [x] Irmão usa `/frase` e recebe uma frase extra própria.
+- [x] Irmão usa `/status` e recebe o diagnóstico da própria entrega.
+- [x] Verificação não consome frase adicional além do necessário para o aceite, seguindo
       a mesma disciplina do aceite AWS já documentado (spec v1, seção 5).
-- [ ] Resultado documentado em `docs/27-aceite-real-do-irmao.md`, no mesmo padrão dos
+- [x] Resultado documentado em `docs/27-aceite-real-do-irmao.md`, no mesmo padrão dos
       aceites anteriores.
