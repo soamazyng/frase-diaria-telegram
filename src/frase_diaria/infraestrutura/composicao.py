@@ -5,6 +5,7 @@ uso. Tudo que ele monta é injetável, para que os testes nunca precisem dele.
 """
 
 import os
+import random
 from contextlib import suppress
 from functools import cache, lru_cache
 from typing import Any
@@ -13,6 +14,7 @@ import boto3
 
 from frase_diaria.aplicacao.consultar_status import ConsultarStatus, EnviarStatus
 from frase_diaria.aplicacao.criar_diaria import CriarDiaria
+from frase_diaria.aplicacao.entregar_pedido import EntregadorDePedido
 from frase_diaria.aplicacao.portas import Relogio
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
@@ -169,14 +171,16 @@ def montar_processar_pedido() -> ProcessarPedido:
     bot_legado = _bot_legado(guardados)
     relogio = RelogioDoSistema()
     sincronizar = _montar_sincronizar_colecao(guardados, relogio)
+    repositorio = RepositorioDePedidosDynamo(
+        tabela=_tabela(),
+        versao=os.environ["VERSAO_DA_APLICACAO"],
+        bot_legado=bot_legado,
+    )
+    canal = TelegramHttp(token=guardados["telegram-bot-token"])
     return ProcessarPedido(
-        repositorio=RepositorioDePedidosDynamo(
-            tabela=_tabela(),
-            versao=os.environ["VERSAO_DA_APLICACAO"],
-            bot_legado=bot_legado,
-        ),
+        repositorio=repositorio,
         fonte=FonteDeFrasesNotion(sincronizar=sincronizar),
-        canal=TelegramHttp(token=guardados["telegram-bot-token"]),
+        entregador=EntregadorDePedido(repositorio, canal, relogio, random.uniform),
         sorteio=SorteioAleatorio(),
         relogio=relogio,
         ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),

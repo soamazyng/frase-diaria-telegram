@@ -43,6 +43,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 21 | Pendente | Não aplicável ainda | Pendente |
 | 22 | Pendente | Não aplicável ainda | Pendente |
 | 26 | Concluído em 2026-09-16 | Review em dois agentes sobre os arquivos da task, base `<COMMIT_SHA>`, seguido de re-review após correção | Standards: OK; Spec: OK; 433 testes e gate completo aprovados |
+| 28 | Concluído em 2026-09-16 | Review em dois agentes sobre o diff staged, seguido de re-review após correção | Standards: OK; Spec: OK; 489 testes e gate completo aprovados |
 
 ### Atualização do ticket 26 — 2026-09-16
 
@@ -53,6 +54,15 @@ o encerramento mantém `INCERTO` e consumo com ressalva. Re-review independente 
 trechos corrigidos: **Standards OK; Spec OK**, sem achados pendentes. O gate final
 passou com 433 testes, Ruff, formatação e mypy. Detalhes, limitações de histórico e
 aceite real pendente em `docs/26-status-por-destinatario.md`.
+
+### Atualização do ticket 28 — 2026-09-16
+
+O review inicial da extração encontrou aleatoriedade global no backoff, um flag redundante
+na agregação e um resultado tipado que aceitava espera sem data. As correções injetaram a
+dispersão, tornaram o teste determinístico, eliminaram o flag e validaram a invariante no
+resultado. O re-review independente concluiu **Standards: OK** e **Spec: OK**. O gate final
+passou com 489 testes, Ruff, formatação e mypy. Os detalhes estão em
+`docs/28-extrair-entrega-por-destinatario.md`.
 
 O ticket 01 verificou condições de conta, custo e permissões e entregou documentação e
 `docs/aws-policy-bootstrap.json`. Isso não equivale a uma implementação de código nem a

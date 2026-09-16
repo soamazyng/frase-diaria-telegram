@@ -12,6 +12,11 @@ from typing import Any
 import pytest
 
 from frase_diaria.aplicacao.consultar_status import ConsultarStatus
+from frase_diaria.aplicacao.entregar_pedido import (
+    DesfechoDaEntrega,
+    EntregadorDePedido,
+    ResultadoDaEntrega,
+)
 from frase_diaria.aplicacao.portas import (
     ChaveDeParte,
     ClassificacaoDoErroDeEnvio,
@@ -30,6 +35,11 @@ from frase_diaria.telegram.canal import ErroDoTelegram
 CHAT = 101
 UMA_FRASE = Frase(identidade="bloco-1", partes=("parte um", "parte dois"))
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+def _sem_dispersao(inicio: float, fim: float) -> float:
+    del fim
+    return inicio
 
 
 def _erro_transitorio(
@@ -239,12 +249,13 @@ def _worker(
     ciclos: Any | None = None,
 ) -> ProcessarPedido:
     ciclos = ciclos if ciclos is not None else CiclosEmMemoria()
+    relogio = RelogioFixo()
     return ProcessarPedido(
         repositorio=repositorio,
         fonte=fonte if fonte is not None else FonteFixa(),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -651,12 +662,13 @@ def _entregar_uma(ciclos: Any, update_id: int, sorteio: Any = None) -> str:
         Pedido(identidade=f"extra#{update_id}", origem=Origem.EXTRA, destinatarios=(CHAT,))
     )
     canal = CanalEspiao()
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(COLECAO),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
         sorteio=sorteio if sorteio is not None else SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -866,12 +878,13 @@ def test_conflito_ao_reservar_propaga_como_reserva_pendente() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
     ciclos = CiclosEmMemoria()
     reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(),
-        canal=CanalEspiao(),
+        entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=reserva,
     )
@@ -895,12 +908,13 @@ def test_conflito_ao_trocar_de_frase_nao_orfaniza_a_reserva_antiga_no_ciclo() ->
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
     reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
     outra = Frase(identidade="bloco-2", partes=("frase nova",))
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa((outra,)),
-        canal=CanalEspiao(),
+        entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=reserva,
     )
@@ -1125,12 +1139,13 @@ def test_prazo_e_checado_por_parte_nao_so_uma_vez_por_execucao() -> None:
     repositorio = RepositorioFalso(pedido)
     ciclos = CiclosEmMemoria()
     canal = CanalQueAtrasaAposEnviar()
+    relogio = RelogioQueAvancaAposUmEnvio(canal)
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioQueAvancaAposUmEnvio(canal),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -1183,8 +1198,8 @@ def test_primeiro_backoff_transitorio_e_a_base_sem_dobrar() -> None:
     assert resultado is not None
     assert resultado.proxima_tentativa is not None
     atraso = (resultado.proxima_tentativa - INSTANTE).total_seconds()
-    base = ProcessarPedido.BASE_DO_BACKOFF_S
-    assert base <= atraso <= base * 1.1  # base + até 10% de dispersão
+    base = EntregadorDePedido.BASE_DO_BACKOFF_S
+    assert atraso == base
 
 
 def test_conflito_ao_consumir_rele_o_ciclo_e_tenta_de_novo() -> None:
@@ -1209,6 +1224,29 @@ def _diaria_compartilhada() -> Pedido:
     return Pedido(
         identidade="diaria#2026-09-07", origem=Origem.DIARIA, destinatarios=(CHAT, CHAT_DO_IRMAO)
     )
+
+
+def test_entregador_agrega_falha_sem_finalizar_o_pedido() -> None:
+    """O módulo de entrega relata o desfecho; o coordenador encerra o pedido."""
+    pedido = _diaria_compartilhada().reservar("bloco-1").iniciar_envio()
+    repositorio = RepositorioFalso(pedido)
+    canal = CanalPorDestinatario(
+        falha_para={CHAT_DO_IRMAO: ErroDoTelegram("Bot API respondeu HTTP 403")}
+    )
+    entregador = EntregadorDePedido(repositorio, canal, RelogioFixo(), _sem_dispersao)
+
+    resultado = entregador.entregar(pedido, UMA_FRASE, sequencial=1)
+
+    assert resultado.desfecho is DesfechoDaEntrega.FALHOU
+    assert resultado.confirmou_algo
+    assert resultado.pedido.estado is EstadoDoPedido.ENVIANDO
+    assert resultado.pedido.destinatarios_com_falha == (CHAT_DO_IRMAO,)
+    assert canal.enviados == [(CHAT, "parte um"), (CHAT, "parte dois")]
+
+
+def test_resultado_aguardando_exige_proxima_tentativa() -> None:
+    with pytest.raises(ValueError, match="próxima tentativa"):
+        ResultadoDaEntrega(_diaria_compartilhada(), DesfechoDaEntrega.AGUARDANDO)
 
 
 def test_diaria_compartilhada_entrega_a_mesma_frase_a_todos_os_destinatarios() -> None:
