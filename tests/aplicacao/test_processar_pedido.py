@@ -12,6 +12,11 @@ from typing import Any
 import pytest
 
 from frase_diaria.aplicacao.consultar_status import ConsultarStatus
+from frase_diaria.aplicacao.encerrar_pedido import (
+    ContextoDoEncerramento,
+    EncerrarPedido,
+    PoliticaDeContencaoDoCiclo,
+)
 from frase_diaria.aplicacao.entregar_pedido import (
     DesfechoDaEntrega,
     EntregadorDePedido,
@@ -242,6 +247,33 @@ class CiclosEmMemoria:
         self.versao += 1
 
 
+def _encerrador(repositorio: Any, ciclos: Any) -> EncerrarPedido:
+    return EncerrarPedido(
+        repositorio,
+        ciclos,
+        PoliticaDeContencaoDoCiclo(lambda _: None, _sem_dispersao),
+    )
+
+
+def test_encerrador_repetido_conclui_o_pedido_e_consumo_uma_unica_vez() -> None:
+    pedido = _pedido_pendente().reservar("bloco-1").iniciar_envio()
+    ciclo = Ciclo.primeiro().reservar("bloco-1")
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria(ciclo)
+    encerrador = _encerrador(repositorio, ciclos)
+    contexto = ContextoDoEncerramento(ciclo, versao_do_ciclo=0, sequencial=1)
+    entrega = ResultadoDaEntrega(pedido, DesfechoDaEntrega.CONCLUIDO, confirmou_algo=True)
+
+    resultado = encerrador.apos_entrega(contexto, entrega)
+    resultado_repetido = encerrador.apos_entrega(contexto, entrega)
+
+    assert resultado.estado is EstadoDoPedido.ENVIADO
+    assert resultado_repetido.estado is EstadoDoPedido.ENVIADO
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.entregas_neste_ciclo == 1
+    assert ciclos.versao == 1
+
+
 def _worker(
     repositorio: Any,
     canal: Any,
@@ -254,6 +286,7 @@ def _worker(
         repositorio=repositorio,
         fonte=fonte if fonte is not None else FonteFixa(),
         entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
         relogio=relogio,
         ciclos=ciclos,
@@ -667,6 +700,7 @@ def _entregar_uma(ciclos: Any, update_id: int, sorteio: Any = None) -> str:
         repositorio=repositorio,
         fonte=FonteFixa(COLECAO),
         entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=sorteio if sorteio is not None else SorteioPrevisivel(),
         relogio=relogio,
         ciclos=ciclos,
@@ -883,6 +917,7 @@ def test_conflito_ao_reservar_propaga_como_reserva_pendente() -> None:
         repositorio=repositorio,
         fonte=FonteFixa(),
         entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
         relogio=relogio,
         ciclos=ciclos,
@@ -913,6 +948,7 @@ def test_conflito_ao_trocar_de_frase_nao_orfaniza_a_reserva_antiga_no_ciclo() ->
         repositorio=repositorio,
         fonte=FonteFixa((outra,)),
         entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
         relogio=relogio,
         ciclos=ciclos,
@@ -1144,6 +1180,7 @@ def test_prazo_e_checado_por_parte_nao_so_uma_vez_por_execucao() -> None:
         repositorio=repositorio,
         fonte=FonteFixa(),
         entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
         relogio=relogio,
         ciclos=ciclos,

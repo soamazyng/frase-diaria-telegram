@@ -44,6 +44,7 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 22 | Pendente | Não aplicável ainda | Pendente |
 | 26 | Concluído em 2026-09-16 | Review em dois agentes sobre os arquivos da task, base `<COMMIT_SHA>`, seguido de re-review após correção | Standards: OK; Spec: OK; 433 testes e gate completo aprovados |
 | 28 | Concluído em 2026-09-16 | Review em dois agentes sobre o diff staged, seguido de re-review após correção | Standards: OK; Spec: OK; 489 testes e gate completo aprovados |
+| 29 | Concluído em 2026-09-16 | Review em dois agentes sobre o diff staged, seguido de re-review após correção | Standards: OK; Spec: OK; 492 testes e gate completo aprovados |
 
 ### Atualização do ticket 26 — 2026-09-16
 
@@ -63,6 +64,16 @@ dispersão, tornaram o teste determinístico, eliminaram o flag e validaram a in
 resultado. O re-review independente concluiu **Standards: OK** e **Spec: OK**. O gate final
 passou com 489 testes, Ruff, formatação e mypy. Os detalhes estão em
 `docs/28-extrair-entrega-por-destinatario.md`.
+
+### Atualização do ticket 29 — 2026-09-16
+
+O review inicial da extração encontrou estado duplicado entre o contexto e o resultado da
+entrega, um teste que não repetia o encerramento prometido como idempotente e um despacho de
+enum sem garantia de exaustividade. As correções deixaram o pedido somente no resultado da
+entrega, repetiram o encerramento contra uma versão obsoleta do ciclo e adicionaram a
+verificação estática de todos os desfechos. O re-review independente concluiu **Standards:
+OK** e **Spec: OK**. O gate final passou com 492 testes, Ruff, formatação e mypy. Os detalhes
+estão em `docs/29-encapsular-encerramento-e-ciclo.md`.
 
 O ticket 01 verificou condições de conta, custo e permissões e entregou documentação e
 `docs/aws-policy-bootstrap.json`. Isso não equivale a uma implementação de código nem a
