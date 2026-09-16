@@ -76,6 +76,11 @@ _TRANSICOES_PERMITIDAS: dict[EstadoDoPedido, frozenset[EstadoDoPedido]] = {
 # precisa reconhecer esse motivo para não exibi-lo como se fosse informativo.
 MOTIVO_PADRAO = "pedido criado"
 
+# Textos compartilhados pelas transições e pelo diagnóstico individual.
+MOTIVO_FRASE_RESERVADA = "frase reservada"
+MOTIVO_ENVIO_INICIADO = "envio iniciado"
+MOTIVO_TODAS_AS_PARTES_CONFIRMADAS = "todas as partes confirmadas"
+
 
 @dataclass(frozen=True)
 class Pedido:
@@ -105,6 +110,8 @@ class Pedido:
     # posterior à criação, e um prazo próximo dela seria ultrapassado antes da
     # própria tentativa única rodar.
     tentativa_unica: bool = False
+    total_de_partes: int | None = None
+    destinatarios_com_falha: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.destinatarios:
@@ -192,7 +199,7 @@ class Pedido:
             raise ValueError("identidade da frase reservada não pode ser vazia")
         return self._transicionar(
             EstadoDoPedido.RESERVADO,
-            "frase reservada",
+            MOTIVO_FRASE_RESERVADA,
             frase_reservada=frase,
         )
 
@@ -203,14 +210,14 @@ class Pedido:
         ):
             return self._transicionar(
                 EstadoDoPedido.ENVIANDO,
-                "envio iniciado",
+                MOTIVO_ENVIO_INICIADO,
                 frase_reservada=self.frase_reservada,
             )
         if self.frase_reservada is None:
             raise ValueError("não é possível enviar pedido sem frase reservada")
         return self._transicionar(
             EstadoDoPedido.ENVIANDO,
-            "envio iniciado",
+            MOTIVO_ENVIO_INICIADO,
             frase_reservada=self.frase_reservada,
         )
 
@@ -254,7 +261,7 @@ class Pedido:
             raise ValueError("não é possível concluir pedido sem frase reservada")
         return self._transicionar(
             EstadoDoPedido.ENVIADO,
-            "todas as partes confirmadas",
+            MOTIVO_TODAS_AS_PARTES_CONFIRMADAS,
             frase_reservada=self.frase_reservada,
         )
 

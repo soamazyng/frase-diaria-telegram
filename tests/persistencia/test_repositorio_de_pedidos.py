@@ -518,3 +518,89 @@ def test_confirmar_parte_recusa_um_sequencial_que_ja_nao_e_dono_do_lease(reposit
 
     repositorio.confirmar_parte(PEDIDO.identidade, CHAT, 0, "texto", 901, INSTANTE, sequencial=2)
     assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {0}
+
+
+def test_total_de_partes_sobrevive_a_reabertura_e_transicoes(repositorio: Any) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    enviando = replace(PEDIDO.reservar("bloco-1").iniciar_envio(), total_de_partes=2)
+    repositorio.salvar(enviando, 1)
+
+    reaberto = RepositorioDePedidosDynamo(repositorio.tabela)
+    recuperado = reaberto.obter(PEDIDO.identidade)
+
+    assert recuperado is not None
+    assert recuperado.total_de_partes == 2
+    reaberto.salvar(recuperado.marcar_incerto("sem confirmação"), 1)
+    assert repositorio.obter(PEDIDO.identidade).total_de_partes == 2
+
+
+def test_falha_individual_sobrevive_a_reabertura_e_lease_superado_nao_a_altera(
+    repositorio: Any,
+) -> None:
+    diaria = Pedido("diaria#2026-09-07", Origem.DIARIA, (101, 202))
+    repositorio.criar_se_ausente(diaria, INSTANTE)
+    repositorio.assumir_lease(diaria.identidade, 1, INSTANTE, timedelta(minutes=5))
+    enviando = replace(
+        diaria.reservar("bloco-1").iniciar_envio(),
+        total_de_partes=2,
+        destinatarios_com_falha=(101,),
+    )
+    repositorio.salvar(enviando, 1)
+    reaberto = RepositorioDePedidosDynamo(repositorio.tabela)
+
+    recuperado = reaberto.obter(diaria.identidade)
+    assert recuperado is not None
+    assert recuperado.destinatarios_com_falha == (101,)
+    reaberto.assumir_lease(diaria.identidade, 2, INSTANTE, timedelta(minutes=5))
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.salvar(replace(enviando, total_de_partes=5, destinatarios_com_falha=()), 1)
+    recuperado = reaberto.obter(diaria.identidade)
+    assert recuperado is not None
+    assert recuperado.destinatarios_com_falha == (101,)
+    assert recuperado.total_de_partes == 2
+
+
+@pytest.mark.parametrize("confirmar", [False, True])
+def test_executor_superado_nao_converte_intencao_do_novo_dono_em_incerta(
+    repositorio: Any,
+    confirmar: bool,
+) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.registrar_intencao_parte(PEDIDO.identidade, CHAT, 0, "texto fictício", INSTANTE)
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == {0}
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+    if confirmar:
+        repositorio.confirmar_parte(PEDIDO.identidade, CHAT, 0, "texto fictício", 901, INSTANTE, 2)
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.marcar_parte_incerta(PEDIDO.identidade, CHAT, 0, "sem confirmação", INSTANTE, 1)
+
+    assert repositorio.indices_incertos(PEDIDO.identidade, CHAT) == set()
+    if confirmar:
+        assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {0}
+    else:
+        assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == {0}
+
+
+def test_converter_intencao_em_incerta_preserva_texto_e_recusa_confirmacao(
+    repositorio: Any,
+) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.registrar_intencao_parte(PEDIDO.identidade, CHAT, 0, "texto fictício", INSTANTE)
+
+    repositorio.marcar_parte_incerta(PEDIDO.identidade, CHAT, 0, "sem confirmação", INSTANTE, 1)
+
+    assert repositorio.indices_incertos(PEDIDO.identidade, CHAT) == {0}
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == set()
+    # Contrato do armazenamento: a conversão preserva o conteúdo da intenção.
+    item = repositorio.tabela.get_item(
+        Key={"pk": f"pedido#{PEDIDO.identidade}", "sk": f"parte#{CHAT}#000"}
+    )["Item"]
+    assert item["texto"] == "texto fictício"
+    repositorio.confirmar_parte(PEDIDO.identidade, CHAT, 1, "confirmado", 902, INSTANTE, 1)
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.marcar_parte_incerta(PEDIDO.identidade, CHAT, 1, "sem confirmação", INSTANTE, 1)
+    assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {1}

@@ -42,6 +42,17 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 20 | Pendente | Não aplicável ainda | Pendente |
 | 21 | Pendente | Não aplicável ainda | Pendente |
 | 22 | Pendente | Não aplicável ainda | Pendente |
+| 26 | Concluído em 2026-09-16 | Review em dois agentes sobre os arquivos da task, base `3395609`, seguido de re-review após correção | Standards: OK; Spec: OK; 433 testes e gate completo aprovados |
+
+### Atualização do ticket 26 — 2026-09-16
+
+O review da conclusão encontrou, nos dois eixos, uma incerteza persistida que podia
+ser perdida no encerramento por falha permanente ou prazo, liberando a frase para
+novo sorteio. Dois casos de regressão falharam antes da correção e passaram depois:
+o encerramento mantém `INCERTO` e consumo com ressalva. Re-review independente dos
+trechos corrigidos: **Standards OK; Spec OK**, sem achados pendentes. O gate final
+passou com 433 testes, Ruff, formatação e mypy. Detalhes, limitações de histórico e
+aceite real pendente em `docs/26-status-por-destinatario.md`.
 
 O ticket 01 verificou condições de conta, custo e permissões e entregou documentação e
 `docs/aws-policy-bootstrap.json`. Isso não equivale a uma implementação de código nem a

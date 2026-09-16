@@ -7,13 +7,13 @@ situação dele com a de outro destinatário.
 **Blocked by:** 25 — Diária com múltiplos destinatários: entrega compartilhada e falhas
 independentes.
 
-**Status:** ready-for-agent — indicação documental, sem label aplicada a um rastreador.
+**Status:** concluído em 2026-09-16 — ver `docs/26-status-por-destinatario.md`
 
-- [ ] `ConsultarStatus` / `RelatorioDeStatus` derivam a situação da diária de hoje a
+- [x] `ConsultarStatus` / `RelatorioDeStatus` derivam a situação da diária de hoje a
       partir das partes confirmadas/incertas do destinatário que perguntou, não do
       estado agregado do pedido.
-- [ ] Dois destinatários com desfechos diferentes na mesma diária (um confirmado, outro
+- [x] Dois destinatários com desfechos diferentes na mesma diária (um confirmado, outro
       incerto) recebem respostas de `/status` diferentes entre si.
-- [ ] `/status` continua sem consumir frase, sem alterar o ciclo e sem expor tokens,
+- [x] `/status` continua sem consumir frase, sem alterar o ciclo e sem expor tokens,
       URLs assinadas ou parâmetros de infraestrutura.
-- [ ] Horários continuam apresentados no fuso local (AC17 mantido).
+- [x] Horários continuam apresentados no fuso local (AC17 mantido).

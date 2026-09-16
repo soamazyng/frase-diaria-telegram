@@ -11,14 +11,16 @@ from typing import Any
 
 import pytest
 
+from frase_diaria.aplicacao.consultar_status import ConsultarStatus
 from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido, ReservaPendente
 from frase_diaria.dominio.ciclo import Ciclo
+from frase_diaria.dominio.colecao import SnapshotPersistido, TentativaDeSincronizacao
 from frase_diaria.dominio.frase import Frase
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.telegram.canal import ErroDoTelegram
 
-CHAT = 672024065
+CHAT = 101
 UMA_FRASE = Frase(identidade="bloco-1", partes=("parte um", "parte dois"))
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 
@@ -99,8 +101,15 @@ class RepositorioFalso:
         )
 
     def marcar_parte_incerta(
-        self, pedido: str, destinatario: int, indice: int, motivo: str, instante: Any
+        self,
+        pedido: str,
+        destinatario: int,
+        indice: int,
+        motivo: str,
+        instante: Any,
+        sequencial: int,
     ) -> None:
+        self._verificar_lease(sequencial)
         self.incertas.append({"destinatario": destinatario, "indice": indice, "motivo": motivo})
 
     def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]:
@@ -271,6 +280,24 @@ def test_resposta_ambigua_do_telegram_marca_o_pedido_como_incerto() -> None:
         }
     ]
     assert repositorio.partes == []
+
+
+def test_intencao_ja_registrada_sem_confirmacao_tambem_persiste_a_incerteza() -> None:
+    """Retomar intenção abandonada mantém a ambiguidade visível no histórico."""
+    repositorio = RepositorioFalso(_pedido_pendente())
+    repositorio.intencoes.append({"destinatario": CHAT, "indice": 0, "texto": "parte um"})
+
+    resultado = _worker(repositorio, CanalEspiao()).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert repositorio.incertas == [
+        {
+            "destinatario": CHAT,
+            "indice": 0,
+            "motivo": "intenção registrada sem confirmação; reenvio automático suspenso",
+        }
+    ]
 
 
 # --- o worker lê da persistência ---------------------------------------------
@@ -1130,3 +1157,184 @@ def test_erro_transitorio_a_um_destinatario_agenda_nova_tentativa_do_pedido_inte
     assert (CHAT, "parte um") in canal.enviados
     assert (CHAT, "parte dois") in canal.enviados
     assert all(chat_id != CHAT_DO_IRMAO for chat_id, _ in canal.enviados)
+
+
+class ColecaoSemSincronizacao:
+    def carregar_ativa(self) -> SnapshotPersistido | None:
+        return None
+
+    def ultima_tentativa(self) -> TentativaDeSincronizacao | None:
+        return None
+
+
+def test_status_reconhece_entrega_completa_quando_outro_destinatario_fica_incerto() -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+
+    class CanalComIncerteza:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            return 0 if chat_id == CHAT_DO_IRMAO else 901
+
+    ciclos = CiclosEmMemoria()
+    _worker(repositorio, CanalComIncerteza(), ciclos=ciclos).executar("diaria#2026-09-07")
+    ciclo_antes = ciclos.carregar()
+    pedido_antes = repositorio.pedido
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+
+    confirmado = consulta.executar()
+    incerto = replace(consulta, chat_id=CHAT_DO_IRMAO).executar()
+
+    assert confirmado.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.ENVIADO
+    assert confirmado.ultimo_envio is not None
+    assert confirmado.ultimo_envio.estado is EstadoDoPedido.ENVIADO
+    assert incerto.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.INCERTO
+    assert ciclos.carregar() == ciclo_antes
+    assert repositorio.pedido == pedido_antes
+
+
+@pytest.mark.parametrize(
+    ("resultado_proprio", "estado_esperado"),
+    [
+        ("confirmado", EstadoDoPedido.ENVIADO),
+        ("incerto", EstadoDoPedido.INCERTO),
+        ("falha", EstadoDoPedido.FALHOU),
+        ("parcial", EstadoDoPedido.PARCIAL),
+    ],
+)
+def test_status_proprio_independe_da_retentativa_do_outro(
+    resultado_proprio: str, estado_esperado: EstadoDoPedido
+) -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+
+    class CanalComRetentativa:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            if chat_id == CHAT_DO_IRMAO:
+                raise ErroDoTelegram("Bot API respondeu HTTP 503", transitorio=True)
+            if resultado_proprio == "incerto":
+                return 0
+            if resultado_proprio == "falha" or (
+                resultado_proprio == "parcial" and texto == "parte dois"
+            ):
+                raise ErroDoTelegram("Bot API respondeu HTTP 403")
+            return 901
+
+    _worker(repositorio, CanalComRetentativa()).executar("diaria#2026-09-07")
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+
+    proprio = consulta.executar()
+    outro = replace(consulta, chat_id=CHAT_DO_IRMAO).executar()
+
+    assert proprio.situacao_da_diaria_de_hoje.estado is estado_esperado
+    assert proprio.proxima_ocorrencia_diaria == datetime(2026, 9, 8, 11, tzinfo=UTC)
+    assert outro.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert outro.proxima_ocorrencia_diaria == datetime(2026, 9, 7, 11, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("falhar_na_segunda", "esperado"),
+    [(False, EstadoDoPedido.FALHOU), (True, EstadoDoPedido.PARCIAL)],
+)
+def test_retentativa_alheia_nao_converte_falha_definitiva_em_incerteza(
+    falhar_na_segunda: bool,
+    esperado: EstadoDoPedido,
+) -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    envios_proprios: list[str] = []
+
+    class CanalComFalhasMistas:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            if chat_id == CHAT_DO_IRMAO:
+                raise ErroDoTelegram("Bot API respondeu HTTP 503", transitorio=True)
+            envios_proprios.append(texto)
+            if not falhar_na_segunda or texto == "parte dois":
+                raise ErroDoTelegram("Bot API respondeu HTTP 403")
+            return 901
+
+    class RelogioDaRetentativa:
+        def agora(self) -> datetime:
+            return INSTANTE + timedelta(minutes=2)
+
+    worker = _worker(repositorio, CanalComFalhasMistas())
+    worker.executar("diaria#2026-09-07")
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+    assert consulta.executar().situacao_da_diaria_de_hoje.estado is esperado
+    envios_antes = list(envios_proprios)
+
+    replace(worker, relogio=RelogioDaRetentativa()).executar("diaria#2026-09-07")
+
+    situacao = consulta.executar().situacao_da_diaria_de_hoje
+    assert situacao.estado is esperado
+    assert situacao.tem_partes_incertas is False
+    assert envios_proprios == envios_antes
+
+
+def test_no_instante_limite_nao_inicia_nenhuma_parte() -> None:
+    pedido = replace(_pedido_pendente(), prazo=INSTANTE)
+    repositorio, canal = RepositorioFalso(pedido), CanalEspiao()
+
+    resultado = _worker(repositorio, canal).executar(pedido.identidade)
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert canal.enviados == []
+
+
+@pytest.mark.parametrize("retomada", [False, True])
+def test_incerteza_mantem_frase_consumida_com_ressalva_sem_afirmar_sucesso(
+    retomada: bool,
+) -> None:
+    pedido = _pedido_pendente()
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria()
+
+    class CanalComAmbiguidade:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            return 0
+
+    canal: CanalComAmbiguidade | CanalEspiao = CanalComAmbiguidade()
+    if retomada:
+        repositorio.pedido = pedido.reservar("bloco-1").iniciar_envio()
+        repositorio.incertas.append({"destinatario": CHAT, "indice": 0, "motivo": "incerta"})
+        ciclos.ciclo = ciclos.ciclo.reservar("bloco-1")
+        canal = CanalEspiao()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar(pedido.identidade)
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+    assert ciclos.ciclo.reservadas == frozenset()
+    if isinstance(canal, CanalEspiao):
+        assert canal.enviados == ["parte dois"]
+
+
+@pytest.mark.parametrize("motivo_do_encerramento", ["falha_permanente", "prazo_esgotado"])
+def test_encerramento_da_retomada_preserva_incerteza_e_consumo_com_ressalva(
+    motivo_do_encerramento: str,
+) -> None:
+    pedido = _diaria_compartilhada().reservar("bloco-1").iniciar_envio()
+    if motivo_do_encerramento == "prazo_esgotado":
+        pedido = replace(pedido, prazo=INSTANTE)
+    repositorio = RepositorioFalso(pedido)
+    repositorio.incertas.append({"destinatario": CHAT, "indice": 0, "motivo": "incerta"})
+    ciclos = CiclosEmMemoria()
+    ciclos.ciclo = ciclos.ciclo.reservar("bloco-1")
+    envios: list[tuple[int, str]] = []
+
+    class CanalComFalhaPermanente:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            envios.append((chat_id, texto))
+            raise ErroDoTelegram("Bot API respondeu HTTP 403")
+
+    resultado = _worker(repositorio, CanalComFalhaPermanente(), ciclos=ciclos).executar(
+        pedido.identidade
+    )
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+    assert ciclos.ciclo.reservadas == frozenset()
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+    assert consulta.executar().situacao_da_diaria_de_hoje.estado is EstadoDoPedido.INCERTO
+    assert (CHAT, "parte um") not in envios
+    if motivo_do_encerramento == "prazo_esgotado":
+        assert envios == []
