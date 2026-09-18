@@ -155,7 +155,12 @@ class ProcessarPedido:
                 self.relogio.agora(),
             )
             return pedido
-        except Exception:
+        except Exception as erro_inesperado:
+            # Só o nome da classe: mensagens de exceção podem carregar detalhe
+            # sensível (URL, corpo de resposta), mas o tipo por si só nunca
+            # carrega — e já é o suficiente para apontar onde investigar,
+            # sem precisar reproduzir o incidente a partir do zero de novo.
+            _log.error("falha inesperada (%s) ao processar pedido", type(erro_inesperado).__name__)
             self.repositorio.finalizar_tentativa(
                 pedido.identidade, sequencial, "erro", "erro de integração", self.relogio.agora()
             )

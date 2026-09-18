@@ -607,6 +607,22 @@ def test_erro_inesperado_registra_tentativa_e_propaga() -> None:
     assert repositorio.tentativas[-1]["erro"] == "erro de integração"
 
 
+def test_erro_inesperado_loga_o_tipo_da_excecao_sem_a_mensagem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mensagem original pode carregar detalhe sensível (URL, corpo de
+    resposta); o nome da classe nunca carrega, e já basta pra apontar onde
+    investigar sem precisar reproduzir o incidente do zero de novo."""
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError):
+        _worker(repositorio, CanalQueQuebra()).executar("extra#42")
+
+    mensagens = [registro.message for registro in caplog.records]
+    assert any("RuntimeError" in mensagem for mensagem in mensagens)
+    assert not any("boto3 estourou" in mensagem for mensagem in mensagens)
+
+
 def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
 
