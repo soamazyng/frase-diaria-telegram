@@ -123,6 +123,13 @@ Resources:
         - Version: "2012-10-17"
           Statement:
             # O worker é quem lê e transaciona: pedido, ciclo, partes, tentativas.
+            # ConditionCheckItem é uma ação IAM própria, distinta de
+            # TransactWriteItems: um item do tipo ConditionCheck dentro da
+            # transação (usado em persistencia/pedidos.py para checar o lease
+            # do pedido sem escrevê-lo, ao gravar a parte) exige essa permissão
+            # à parte — achado real em produção: toda entrega falhava com
+            # AccessDeniedException em TransactWriteItems, porque só o wrapper
+            # da transação estava autorizado, nunca o ConditionCheck dentro dela.
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
@@ -131,6 +138,7 @@ Resources:
                 - dynamodb:Query
                 - dynamodb:TransactWriteItems
                 - dynamodb:TransactGetItems
+                - dynamodb:ConditionCheckItem
               Resource:
                 - Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
                 - !Sub
