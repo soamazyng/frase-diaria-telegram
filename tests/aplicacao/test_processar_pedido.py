@@ -623,19 +623,24 @@ def test_erro_inesperado_loga_o_tipo_da_excecao_sem_a_mensagem(
     assert not any("boto3 estourou" in mensagem for mensagem in mensagens)
 
 
-def test_erro_inesperado_do_aws_sdk_loga_o_codigo_sem_a_mensagem(
+def test_erro_inesperado_do_aws_sdk_loga_codigo_e_operacao_sem_a_mensagem(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`ClientError` do boto3 expõe `.response["Error"]["Code"]` — um código
-    curto e sanitizado (ex.: "ValidationException"), diferente da mensagem
-    completa, que pode ecoar detalhe da chamada. Duck typing, não import de
-    botocore: a camada de aplicação não pode depender dele (test_arquitetura.py).
+    """`ClientError` do boto3 expõe `.response["Error"]["Code"]` e
+    `.operation_name` — um código curto e o nome da chamada de API, nenhum
+    dos dois carregando ARN, conta ou corpo de resposta, ao contrário da
+    mensagem completa. Duck typing, não import de botocore: a camada de
+    aplicação não pode depender dele (test_arquitetura.py).
     """
 
     class ClientErrorFalso(RuntimeError):
         def __init__(self) -> None:
-            super().__init__("An error occurred (ValidationException) when calling PutItem")
+            super().__init__(
+                "An error occurred (ValidationException) when calling the PutItem "
+                "operation: detalhe da chamada com possível dado sensível"
+            )
             self.response = {"Error": {"Code": "ValidationException", "Message": "detalhe"}}
+            self.operation_name = "PutItem"
 
     class CanalQueQuebraComClientError:
         def enviar_texto(self, chat_id: int, texto: str) -> int:
@@ -647,8 +652,10 @@ def test_erro_inesperado_do_aws_sdk_loga_o_codigo_sem_a_mensagem(
         _worker(repositorio, CanalQueQuebraComClientError()).executar("extra#42")
 
     mensagens = [registro.message for registro in caplog.records]
-    assert any("ValidationException" in mensagem for mensagem in mensagens)
-    assert not any("PutItem" in mensagem for mensagem in mensagens)
+    assert any(
+        "ValidationException" in mensagem and "PutItem" in mensagem for mensagem in mensagens
+    )
+    assert not any("dado sensível" in mensagem for mensagem in mensagens)
 
 
 def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
