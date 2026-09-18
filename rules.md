@@ -123,6 +123,36 @@ Ler a frase antes de propor solução economiza uma rodada inteira.
 `default` dispensa. Uma seção `[nome]` ali é invisível ao CLI, que responde
 `could not be found` como se o perfil não existisse.
 
+**`TransactWriteItems`/`TransactGetItems` não bastam para um item
+`ConditionCheck`.** A AWS trata cada item de uma transação como uma ação IAM
+própria: `Put`→`dynamodb:PutItem`, `Update`→`dynamodb:UpdateItem`, e um item
+do tipo `ConditionCheck` (checar sem escrever) exige `dynamodb:ConditionCheckItem`
+à parte — o wrapper da transação autorizado não cobre isso.
+
+> A diária de 2026-09-18 não chegou: toda tentativa de entrega falhava
+> deterministicamente com `AccessDeniedException` em `TransactWriteItems`,
+> mascarada como "erro de integração" genérico. `ReservaTransacional` (ticket
+> 09) nunca precisou de `ConditionCheckItem` porque embute a condição direto
+> no `Put`/`Update`; só o padrão de transação por parte em
+> `persistencia/pedidos.py` (`ConditionCheck` separado, para checar o lease do
+> pedido sem escrevê-lo) precisa — e a policy nunca ganhou essa ação quando
+> esse padrão foi introduzido. Ao adicionar um item `ConditionCheck` numa
+> transação nova, adicionar `dynamodb:ConditionCheckItem` à policy no mesmo
+> commit, não depois.
+
+**Diagnosticar produção rodando código localmente não prova que a Lambda
+funciona.** A credencial de desenvolvedor (`perfil-padrao`) é um principal IAM
+diferente da role de execução da função — pode ter permissão que a role real
+não tem.
+
+> Foi assim que o achado acima ficou escondido por um tempo: invocações
+> manuais do worker (via `montar_processar_pedido().executar(...)` local)
+> nunca bateram no mesmo `AccessDeniedException` das automáticas, porque a
+> credencial de dev tinha `dynamodb:ConditionCheckItem` e a role do Lambda
+> não. Um "funcionou pra mim" rodando local não descarta um problema de IAM —
+> só o CloudWatch da própria função (ou testar assumindo a role real) prova
+> isso.
+
 ---
 
 ## Publicar
