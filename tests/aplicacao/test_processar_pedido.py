@@ -607,6 +607,57 @@ def test_erro_inesperado_registra_tentativa_e_propaga() -> None:
     assert repositorio.tentativas[-1]["erro"] == "erro de integração"
 
 
+def test_erro_inesperado_loga_o_tipo_da_excecao_sem_a_mensagem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mensagem original pode carregar detalhe sensível (URL, corpo de
+    resposta); o nome da classe nunca carrega, e já basta pra apontar onde
+    investigar sem precisar reproduzir o incidente do zero de novo."""
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError):
+        _worker(repositorio, CanalQueQuebra()).executar("extra#42")
+
+    mensagens = [registro.message for registro in caplog.records]
+    assert any("RuntimeError" in mensagem for mensagem in mensagens)
+    assert not any("boto3 estourou" in mensagem for mensagem in mensagens)
+
+
+def test_erro_inesperado_do_aws_sdk_loga_codigo_e_operacao_sem_a_mensagem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`ClientError` do boto3 expõe `.response["Error"]["Code"]` e
+    `.operation_name` — um código curto e o nome da chamada de API, nenhum
+    dos dois carregando ARN, conta ou corpo de resposta, ao contrário da
+    mensagem completa. Duck typing, não import de botocore: a camada de
+    aplicação não pode depender dele (test_arquitetura.py).
+    """
+
+    class ClientErrorFalso(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__(
+                "An error occurred (ValidationException) when calling the PutItem "
+                "operation: detalhe da chamada com possível dado sensível"
+            )
+            self.response = {"Error": {"Code": "ValidationException", "Message": "detalhe"}}
+            self.operation_name = "PutItem"
+
+    class CanalQueQuebraComClientError:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            raise ClientErrorFalso()
+
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalQueQuebraComClientError()).executar("extra#42")
+
+    mensagens = [registro.message for registro in caplog.records]
+    assert any(
+        "ValidationException" in mensagem and "PutItem" in mensagem for mensagem in mensagens
+    )
+    assert not any("dado sensível" in mensagem for mensagem in mensagens)
+
+
 def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
 

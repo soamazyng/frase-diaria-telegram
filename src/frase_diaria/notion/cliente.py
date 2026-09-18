@@ -1,3 +1,4 @@
+import http.client
 import json
 import re
 import time
@@ -111,7 +112,12 @@ class ClienteNotionHttp:
                 # A URL da chamada não carrega segredo, mas a resposta pode; só
                 # o código importa aqui, como no cliente do Telegram.
                 raise ErroDoNotion(f"Notion respondeu HTTP {erro.code}") from None
-            except urllib.error.URLError:
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+                # Há falhas de transporte que urllib não embrulha em URLError
+                # (RemoteDisconnected foi observada em produção do lado do
+                # Telegram, telegram/canal.py) — sem este tratamento aqui
+                # também, a mesma classe escaparia como exceção crua, sem
+                # virar SincronizacaoIncompleta nem acionar o cache (AC09).
                 raise ErroDoNotion("falha de rede ao chamar o Notion") from None
 
         try:

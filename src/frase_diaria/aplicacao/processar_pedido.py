@@ -155,7 +155,25 @@ class ProcessarPedido:
                 self.relogio.agora(),
             )
             return pedido
-        except Exception:
+        except Exception as erro_inesperado:
+            # Nome da classe, código de erro e operação da API — nenhum dos
+            # três carrega detalhe sensível (ARN, conta, corpo de resposta),
+            # ao contrário da mensagem completa do boto3. Duck typing em vez
+            # de importar botocore: a camada de aplicação não pode depender
+            # dele (test_arquitetura.py). Já basta pra apontar onde
+            # investigar sem precisar reproduzir o incidente do zero de novo.
+            codigo_aws = getattr(erro_inesperado, "response", {}).get("Error", {}).get("Code")
+            operacao_aws = getattr(erro_inesperado, "operation_name", None)
+            detalhe = ""
+            if codigo_aws:
+                detalhe = f", código AWS {codigo_aws}"
+                if operacao_aws:
+                    detalhe += f" em {operacao_aws}"
+            _log.error(
+                "falha inesperada (%s%s) ao processar pedido",
+                type(erro_inesperado).__name__,
+                detalhe,
+            )
             self.repositorio.finalizar_tentativa(
                 pedido.identidade, sequencial, "erro", "erro de integração", self.relogio.agora()
             )
