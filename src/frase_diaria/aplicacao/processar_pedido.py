@@ -1,18 +1,28 @@
 import logging
-import random
-import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import ClassVar, Protocol
 
 from frase_diaria.aplicacao.diagnostico import erro_sanitizado
-from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia, Relogio, Sorteio
+from frase_diaria.aplicacao.encerrar_pedido import (
+    ContextoDoEncerramento,
+    EncerrarPedido,
+    RepositorioDeCiclos,
+)
+from frase_diaria.aplicacao.entregar_pedido import EntregadorDePedido
+from frase_diaria.aplicacao.portas import (
+    ConflitoDeConcorrencia,
+    Relogio,
+)
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
-from frase_diaria.dominio.pedido import EstadoDoPedido, Pedido
-from frase_diaria.dominio.selecao import SemFrase, selecionar
-from frase_diaria.telegram.canal import MESSAGE_ID_DESCONHECIDO, ErroDoTelegram
+from frase_diaria.dominio.pedido import (
+    MOTIVO_JANELA_ENCERRADA,
+    MOTIVO_TENTATIVA_UNICA_ESGOTADA,
+    EstadoDoPedido,
+    Pedido,
+)
+from frase_diaria.dominio.selecao import SemFrase, Sorteio, selecionar
 
 _log = logging.getLogger(__name__)
 
@@ -23,24 +33,9 @@ class RepositorioDePedidos(Protocol):
         self, pedido: str, sequencial: int, agora: datetime, duracao: timedelta
     ) -> None: ...
     def salvar(self, pedido: Pedido, sequencial: int | None = None) -> None: ...
-    def registrar_intencao_parte(
-        self, pedido: str, indice: int, texto: str, instante: datetime
-    ) -> None: ...
-    def confirmar_parte(
-        self,
-        pedido: str,
-        indice: int,
-        texto: str,
-        message_id: int,
-        instante: datetime,
-        sequencial: int | None = None,
-    ) -> None: ...
-    def marcar_parte_incerta(
-        self, pedido: str, indice: int, motivo: str, instante: datetime
-    ) -> None: ...
-    def indices_confirmados(self, pedido: str) -> set[int]: ...
-    def indices_incertos(self, pedido: str) -> set[int]: ...
-    def indices_intencoes(self, pedido: str) -> set[int]: ...
+    def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]: ...
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]: ...
+    def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]: ...
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: datetime
     ) -> int: ...
@@ -51,13 +46,6 @@ class RepositorioDePedidos(Protocol):
 
 class FonteDeFrases(Protocol):
     def listar(self) -> tuple[Frase, ...]: ...
-
-
-class RepositorioDeCiclos(Protocol):
-    def carregar(self) -> tuple[Ciclo, int]: ...
-    def salvar(self, ciclo: Ciclo, versao_anterior: int) -> None:
-        """Grava se `versao_anterior` ainda for a versão vigente do ciclo."""
-        ...
 
 
 class Reserva(Protocol):
@@ -76,12 +64,6 @@ class ReservaPendente(RuntimeError):
     """
 
 
-class CanalDeEnvio(Protocol):
-    def enviar_texto(self, chat_id: int, texto: str) -> int:
-        """Envia e devolve o message_id atribuído pelo Telegram."""
-        ...
-
-
 @dataclass(frozen=True)
 class ProcessarPedido:
     """Transforma um pedido persistido em mensagens entregues.
@@ -98,28 +80,14 @@ class ProcessarPedido:
 
     repositorio: RepositorioDePedidos
     fonte: FonteDeFrases
-    canal: CanalDeEnvio
+    entregador: EntregadorDePedido
+    encerrador: EncerrarPedido
     sorteio: Sorteio
     relogio: Relogio
     ciclos: RepositorioDeCiclos
     reserva: Reserva
 
     DURACAO_DO_LEASE: ClassVar[timedelta] = timedelta(minutes=5)
-    # Regravar o ciclo depois de um conflito não chama o Telegram nem repete
-    # nada visível à usuária — só relê e tenta de novo um item pequeno do
-    # DynamoDB. O teto existe para não travar a Lambda para sempre se a
-    # condição nunca puder ser satisfeita; não para poupar chamadas caras.
-    MAX_TENTATIVAS_DE_CICLO: ClassVar[int] = 20
-    # Sob contenção real, vários pedidos colidem na mesma gravação ao mesmo
-    # tempo; sem dispersão, todos relêem e tentam de novo juntos, colidindo de
-    # novo. Um jitter pequeno já quebra essa sincronia (achado do code-review).
-    ESPERA_MAXIMA_ENTRE_TENTATIVAS_S: ClassVar[float] = 0.02
-    # Espera progressiva entre tentativas após um erro transitório do Telegram
-    # (AC13): dobra a cada tentativa, com um teto para não deixar um pedido
-    # preso a um atraso enorme, e uma dispersão para não sincronizar retentativas
-    # de pedidos diferentes que falharam no mesmo instante.
-    BASE_DO_BACKOFF_S: ClassVar[float] = 30.0
-    TETO_DO_BACKOFF_S: ClassVar[float] = 900.0
     # Observabilidade (spec, 4.8): quando uma tentativa roda bem depois do
     # instante em que estava agendada, vale registrar — sinal de fila
     # acumulando ou disparo atrasado, não de um comportamento errado.
@@ -203,6 +171,13 @@ class ProcessarPedido:
 
     def _processar(self, pedido: Pedido, sequencial: int) -> Pedido:
         ciclo, versao_ciclo = self.ciclos.carregar()
+        contexto = ContextoDoEncerramento(ciclo, versao_ciclo, sequencial)
+        retomada_suspensa = self.entregador.suspender_retomada_sem_snapshot(pedido, sequencial)
+        if retomada_suspensa is not None:
+            return self.encerrador.marcar_incerto(contexto, pedido, retomada_suspensa.motivo)
+        motivo_do_esgotamento = self._motivo_se_esgotado(pedido, sequencial)
+        if motivo_do_esgotamento is not None:
+            return self.encerrador.expirar(contexto, pedido, motivo_do_esgotamento)
         escolha = self._escolher(pedido, ciclo)
 
         if escolha is SemFrase.AGUARDANDO_RESERVA:
@@ -213,7 +188,7 @@ class ProcessarPedido:
             self.repositorio.salvar(pedido.aguardar_tentativa(motivo), sequencial)
             raise ReservaPendente(motivo)
         if escolha is SemFrase.COLECAO_VAZIA:
-            return self._encerrar_sem_conteudo(pedido, ciclo, versao_ciclo, sequencial)
+            return self.encerrador.sem_conteudo(contexto, pedido)
 
         frase, ciclo = escolha
         pedido_para_reservar = pedido
@@ -230,7 +205,10 @@ class ProcessarPedido:
         if pedido_para_reservar.frase_reservada is None:
             # Ciclo e pedido em uma transação: gravar um sem o outro deixaria uma
             # reserva órfã que nada libera, travando o ciclo para sempre.
-            candidato = pedido_para_reservar.reservar(frase.identidade)
+            candidato = replace(
+                pedido_para_reservar.reservar(frase.identidade),
+                partes_reservadas=frase.partes,
+            )
             try:
                 self.reserva.efetivar(candidato, ciclo, versao_ciclo, sequencial)
             except ConflitoDeConcorrencia as conflito:
@@ -252,10 +230,41 @@ class ProcessarPedido:
         else:
             pedido = pedido_para_reservar
 
-        if pedido.estado is not EstadoDoPedido.ENVIANDO:
-            pedido = pedido.iniciar_envio()
+        if (
+            pedido.estado is not EstadoDoPedido.ENVIANDO
+            or pedido.total_de_partes != len(frase.partes)
+            or pedido.partes_reservadas != frase.partes
+        ):
+            if pedido.estado is not EstadoDoPedido.ENVIANDO:
+                pedido = pedido.iniciar_envio()
+            pedido = replace(
+                pedido,
+                total_de_partes=len(frase.partes),
+                partes_reservadas=frase.partes,
+            )
             self.repositorio.salvar(pedido, sequencial)
-        return self._entregar(pedido, frase, ciclo, versao_ciclo, sequencial)
+        entrega = self.entregador.entregar(pedido, frase, sequencial)
+        return self.encerrador.apos_entrega(
+            ContextoDoEncerramento(ciclo, versao_ciclo, sequencial),
+            entrega,
+        )
+
+    def _motivo_se_esgotado(self, pedido: Pedido, sequencial: int) -> str | None:
+        """Motivo de encerramento se não há mais chance de nova tentativa, senão `None`.
+
+        `EntregadorDePedido` já respeita prazo e tentativa única, mas só
+        dentro do envio de cada parte. Uma falha ANTES da entrega — na
+        sincronização com o Notion, por exemplo — nunca alcança essa checagem,
+        então sem esta aqui um pedido assim retenta para sempre: achado real
+        de produção, um `/frase` com 836 tentativas ao longo de mais de um dia,
+        muito além do prazo. `sequencial == 1` é sempre a primeira tentativa
+        (spec, 4.5: a tentativa única precisa rodar, cedo ou tarde).
+        """
+        if pedido.prazo_vencido(self.relogio.agora()):
+            return MOTIVO_JANELA_ENCERRADA
+        if pedido.tentativa_unica and sequencial > 1:
+            return MOTIVO_TENTATIVA_UNICA_ESGOTADA
+        return None
 
     def _escolher(self, pedido: Pedido, ciclo: Ciclo) -> tuple[Frase, Ciclo] | SemFrase:
         """Decide qual frase entregar, respeitando o ciclo.
@@ -273,10 +282,12 @@ class ProcessarPedido:
         por_identidade = {f.identidade: f for f in disponiveis}
 
         if pedido.frase_reservada is not None:
+            if pedido.partes_reservadas is not None and self._algum_destinatario_iniciou(pedido):
+                return Frase(pedido.frase_reservada, pedido.partes_reservadas), ciclo
             frase = por_identidade.get(pedido.frase_reservada)
             if frase is not None:
                 return frase, ciclo
-            if self.repositorio.indices_confirmados(pedido.identidade):
+            if self._algum_destinatario_confirmou(pedido):
                 return SemFrase.COLECAO_VAZIA
             if pedido.frase_reservada in ciclo.reservadas:
                 ciclo = ciclo.liberar(pedido.frase_reservada)
@@ -287,259 +298,24 @@ class ProcessarPedido:
         identidade, ciclo = escolha
         return por_identidade[identidade], ciclo
 
-    def _encerrar_por_janela_esgotada(
-        self, pedido: Pedido, ciclo: Ciclo, versao_ciclo: int, sequencial: int
-    ) -> Pedido:
-        """O prazo do pedido já passou: abandona em vez de tentar entregar.
-
-        Nada enviado ainda vira EXPIRADO — mais preciso que FALHOU para "o tempo
-        acabou", sem confundir com uma recusa do Telegram. Alguma parte já
-        confirmada precisa continuar PARCIAL, com a mesma ressalva de consumo de
-        qualquer outra entrega incompleta (spec, 4.4; AC14).
-        """
-        motivo = "janela de recuperação encerrada"
-        alguma_enviada = bool(self.repositorio.indices_confirmados(pedido.identidade))
-        encerrado = (
-            pedido.falhar(alguma_parte_enviada=True, motivo=motivo)
-            if alguma_enviada
-            else pedido.expirar(motivo)
-        )
-        self.repositorio.salvar(encerrado, sequencial)
-        if pedido.frase_reservada is not None:
-            self._encerrar_no_ciclo(ciclo, versao_ciclo, pedido.frase_reservada, alguma_enviada)
-        return encerrado
-
-    def _encerrar_sem_conteudo(
-        self, pedido: Pedido, ciclo: Ciclo, versao_ciclo: int, sequencial: int
-    ) -> Pedido:
-        """Não há frase para entregar: ou a coleção está vazia, ou a reservada sumiu.
-
-        Consultar as partes já confirmadas antes de decidir é o que preserva a
-        invariante: quem já entregou alguma parte mantém a frase consumida, ainda
-        que ela tenha desaparecido da fonte.
-        """
-        ja_entregou = bool(self.repositorio.indices_confirmados(pedido.identidade))
-        motivo = (
-            "frase reservada não está mais na coleção"
-            if pedido.frase_reservada is not None
-            else "coleção sem frases elegíveis"
-        )
-        encerrado = pedido.falhar(alguma_parte_enviada=ja_entregou, motivo=motivo)
-        # Pedido primeiro: um crash depois disto deixa o ciclo desatualizado, que
-        # é recuperável; a ordem inversa deixaria o pedido reivindicando uma
-        # reserva que o ciclo já soltou, e a retomada reentregaria a frase.
-        self.repositorio.salvar(encerrado, sequencial)
-        if pedido.frase_reservada is not None:
-            self._encerrar_no_ciclo(ciclo, versao_ciclo, pedido.frase_reservada, ja_entregou)
-        return encerrado
-
-    def _encerrar_no_ciclo(
-        self, ciclo: Ciclo, versao_ciclo: int, frase: str, alguma_enviada: bool
-    ) -> None:
-        """Consumo só depois de entrega confirmada.
-
-        Nada entregue devolve a frase às elegíveis. Entrega parcial marca consumo
-        **com ressalva**: a frase conta como gasta, para não reenviar
-        automaticamente algo que já pode ter chegado, e a dúvida fica registrada.
-        """
-        if alguma_enviada:
-            self._consumir_no_ciclo(ciclo, versao_ciclo, frase, com_ressalva=True)
-            return
-        self._retentar_no_ciclo(
-            ciclo,
-            versao_ciclo,
-            continuar=lambda c: frase in c.reservadas,
-            transformar=lambda c: c.liberar(frase),
+    def _algum_destinatario_iniciou(self, pedido: Pedido) -> bool:
+        return any(
+            self.repositorio.indices_confirmados(pedido.identidade, destinatario)
+            or self.repositorio.indices_incertos(pedido.identidade, destinatario)
+            or self.repositorio.indices_intencoes(pedido.identidade, destinatario)
+            for destinatario in pedido.destinatarios
         )
 
-    def _consumir_no_ciclo(
-        self, ciclo: Ciclo, versao_ciclo: int, frase: str, com_ressalva: bool
-    ) -> None:
-        """Marca a frase como gasta, mesmo que o ciclo tenha perdido a reserva.
+    def _algum_destinatario_confirmou(self, pedido: Pedido) -> bool:
+        """Se a frase já chegou, confirmada, a pelo menos um destinatário.
 
-        Perder a reserva é sinal de divergência — uma gravação concorrente
-        sobrescreveu o ciclo, por exemplo. Pular o consumo em silêncio deixaria
-        uma frase já entregue elegível de novo no mesmo ciclo, quebrando o
-        sorteio sem repetição. Registrar e consumir mesmo assim é o desfecho
-        correto: a mensagem foi para a usuária.
+        É o que decide se a frase fica consumida-com-ressalva (nunca mais
+        reoferecida, para não duplicar a quem já recebeu) ou é liberada de
+        volta ao ciclo (nada confirmado a ninguém ainda). Generaliza o que
+        antes da v2 era "esta única conversa recebeu alguma parte" — agora é
+        "algum destinatário deste pedido recebeu alguma parte" (spec v2).
         """
-
-        def transformar(c: Ciclo) -> Ciclo:
-            if frase not in c.reservadas:
-                _log.warning("ciclo perdeu reserva; consumindo assim mesmo")
-                c = c.reservar(frase)
-            return c.consumir(frase, com_ressalva=com_ressalva)
-
-        self._retentar_no_ciclo(
-            ciclo,
-            versao_ciclo,
-            continuar=lambda c: not c.foi_consumida(frase),
-            transformar=transformar,
+        return any(
+            self.repositorio.indices_confirmados(pedido.identidade, destinatario)
+            for destinatario in pedido.destinatarios
         )
-
-    def _retentar_no_ciclo(
-        self,
-        ciclo: Ciclo,
-        versao_ciclo: int,
-        *,
-        continuar: Callable[[Ciclo], bool],
-        transformar: Callable[[Ciclo], Ciclo],
-    ) -> None:
-        """Regrava o ciclo, relendo e reaplicando a mudança se perder a corrida.
-
-        Diárias e extras compartilham o mesmo item de ciclo: dois pedidos
-        distintos podem terminar ao mesmo tempo e disputar a mesma gravação. Um
-        conflito de versão aqui não é motivo para abortar o pedido — que já está
-        em estado terminal a esta altura —, só para reler o ciclo e tentar de
-        novo (ticket 09). Esgotadas as tentativas, desiste e registra: o próximo
-        pedido que tocar a mesma frase reconcilia a divergência.
-        """
-        for _ in range(self.MAX_TENTATIVAS_DE_CICLO):
-            if not continuar(ciclo):
-                return
-            try:
-                self.ciclos.salvar(transformar(ciclo), versao_ciclo)
-                return
-            except ConflitoDeConcorrencia:
-                _log.warning("conflito de concorrência no ciclo; relendo para tentar de novo")
-                time.sleep(random.uniform(0, self.ESPERA_MAXIMA_ENTRE_TENTATIVAS_S))
-                ciclo, versao_ciclo = self.ciclos.carregar()
-        _log.error("ciclo não avançou após conflitos repetidos; próximo pedido reconcilia")
-
-    def _entregar(
-        self, pedido: Pedido, frase: Frase, ciclo: Ciclo, versao_ciclo: int, sequencial: int
-    ) -> Pedido:
-        ja_confirmadas = self.repositorio.indices_confirmados(pedido.identidade)
-        ja_incertas: set[int] = getattr(self.repositorio, "indices_incertos", lambda *_: set())(
-            pedido.identidade
-        )
-        alguma_enviada = bool(ja_confirmadas)
-
-        for indice, texto in enumerate(frase.partes):
-            if indice in ja_confirmadas or indice in ja_incertas:
-                continue
-            # Checado imediatamente antes de cada chamada ao Telegram, não uma
-            # vez só por execução: uma frase de várias partes pode atravessar o
-            # prazo no meio do envio (spec, 4.5; AC14).
-            if pedido.prazo is not None and self.relogio.agora() > pedido.prazo:
-                return self._encerrar_por_janela_esgotada(pedido, ciclo, versao_ciclo, sequencial)
-            indices_intencoes: set[int] = getattr(
-                self.repositorio, "indices_intencoes", lambda *_: set()
-            )(pedido.identidade)
-            if indice in indices_intencoes:
-                motivo = "intenção registrada sem confirmação; reenvio automático suspenso"
-                return self._marcar_incerto(
-                    pedido, motivo, alguma_enviada, ciclo, versao_ciclo, sequencial
-                )
-            registrar_intencao = getattr(self.repositorio, "registrar_intencao_parte", None)
-            if registrar_intencao is not None:
-                registrar_intencao(pedido.identidade, indice, texto, self.relogio.agora())
-            try:
-                message_id = self.canal.enviar_texto(pedido.chat_id, texto)
-            except ErroDoTelegram as erro:
-                # A mensagem já vem sanitizada do canal: sem token, sem URL.
-                # Tentativa única (extra a partir do meio-dia local) não retenta
-                # nem diante de erro transitório — é a própria tentativa, não uma
-                # entre várias (spec, 4.5).
-                if (
-                    erro.transitorio
-                    and not pedido.tentativa_unica
-                    and (pedido.prazo is None or self.relogio.agora() < pedido.prazo)
-                ):
-                    proximo = self._proximo_instante_de_tentativa(sequencial, erro.retry_after_s)
-                    return self._reagendar_apos_falha_transitoria(
-                        pedido, str(erro), sequencial, proximo
-                    )
-                return self._encerrar_com_falha(
-                    pedido, str(erro), alguma_enviada, ciclo, versao_ciclo, sequencial
-                )
-            if message_id == MESSAGE_ID_DESCONHECIDO:
-                motivo = "Telegram pode ter aceitado a parte, mas não houve confirmação durável"
-                marcar_incerta = getattr(self.repositorio, "marcar_parte_incerta", None)
-                if marcar_incerta is not None:
-                    marcar_incerta(pedido.identidade, indice, motivo, self.relogio.agora())
-                return self._marcar_incerto(
-                    pedido, motivo, alguma_enviada, ciclo, versao_ciclo, sequencial
-                )
-            # Confirmação persistida com o texto efetivamente enviado: o histórico
-            # preserva o que chegou, mesmo que a origem mude depois. A condição do
-            # lease garante que um executor superado não confirma nada (AC03) —
-            # `ConflitoDeConcorrencia` propaga até `executar`, que trata o caso.
-            self.repositorio.confirmar_parte(
-                pedido.identidade, indice, texto, message_id, self.relogio.agora(), sequencial
-            )
-            alguma_enviada = True
-
-        concluido = pedido.concluir()
-        self.repositorio.salvar(concluido, sequencial)
-        # Consumo definitivo: todas as partes confirmadas.
-        self._consumir_no_ciclo(ciclo, versao_ciclo, frase.identidade, com_ressalva=False)
-        return concluido
-
-    def _proximo_instante_de_tentativa(
-        self, sequencial: int, retry_after_s: float | None
-    ) -> datetime:
-        """Espera progressiva com teto e dispersão, respeitando o retry_after do Telegram.
-
-        `sequencial` já é a tentativa monotônica deste pedido (de
-        `registrar_tentativa`); usá-lo como expoente evita persistir uma
-        contagem separada só para o backoff. Ele conta toda tentativa do
-        pedido, não só as que erraram por um `ErroDoTelegram` transitório — uma
-        retentativa por contenção de ciclo antes do primeiro erro do Telegram já
-        infla o expoente. Aceito de propósito: o teto (`TETO_DO_BACKOFF_S`)
-        limita o efeito, e a alternativa exigiria persistir uma contagem à parte
-        só para este cálculo.
-        """
-        if retry_after_s is not None:
-            atraso = float(retry_after_s)
-        else:
-            # sequencial=1 (primeira tentativa) já é a primeira falha possível:
-            # o expoente começa em zero para que o primeiro backoff seja
-            # BASE_DO_BACKOFF_S, não o dobro.
-            atraso = min(self.BASE_DO_BACKOFF_S * (2 ** (sequencial - 1)), self.TETO_DO_BACKOFF_S)
-            atraso += random.uniform(0, atraso * 0.1)
-        return self.relogio.agora() + timedelta(seconds=atraso)
-
-    def _reagendar_apos_falha_transitoria(
-        self, pedido: Pedido, motivo: str, sequencial: int, proximo: datetime
-    ) -> Pedido:
-        """Erro transitório do Telegram: mantém a reserva e tenta de novo mais tarde.
-
-        Diferente de uma falha definitiva, nada é liberado nem consumido no
-        ciclo aqui — a próxima tentativa reaproveita exatamente a mesma reserva
-        (spec, 4.4; AC13).
-        """
-        reagendado = pedido.aguardar_tentativa(erro_sanitizado(motivo), proximo)
-        self.repositorio.salvar(reagendado, sequencial)
-        return reagendado
-
-    def _marcar_incerto(
-        self,
-        pedido: Pedido,
-        motivo: str,
-        alguma_enviada: bool,
-        ciclo: Ciclo,
-        versao_ciclo: int,
-        sequencial: int,
-    ) -> Pedido:
-        incerto = pedido.marcar_incerto(motivo)
-        self.repositorio.salvar(incerto, sequencial)
-        if pedido.frase_reservada is not None:
-            self._encerrar_no_ciclo(ciclo, versao_ciclo, pedido.frase_reservada, alguma_enviada)
-        return incerto
-
-    def _encerrar_com_falha(
-        self,
-        pedido: Pedido,
-        erro: str,
-        alguma_enviada: bool,
-        ciclo: Ciclo,
-        versao_ciclo: int,
-        sequencial: int,
-    ) -> Pedido:
-        erro = erro_sanitizado(erro)
-        encerrado = pedido.falhar(alguma_parte_enviada=alguma_enviada, motivo=erro)
-        self.repositorio.salvar(encerrado, sequencial)
-        if pedido.frase_reservada is not None:
-            self._encerrar_no_ciclo(ciclo, versao_ciclo, pedido.frase_reservada, alguma_enviada)
-        return encerrado

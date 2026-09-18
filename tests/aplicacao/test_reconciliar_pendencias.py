@@ -51,11 +51,11 @@ class DiariaEspiao:
         self.chamadas.append(instante_do_evento)
         if self._falhar:
             raise RuntimeError("DynamoDB indisponível")
-        return "diaria#672024065#2026-09-07"
+        return "diaria#111111#2026-09-07"
 
 
 def _pedido(identidade: str) -> Pedido:
-    return Pedido(identidade=identidade, origem=Origem.EXTRA, chat_id=672024065)
+    return Pedido(identidade=identidade, origem=Origem.EXTRA, destinatarios=(111111,))
 
 
 def _reconciliador(
@@ -79,13 +79,13 @@ DEPOIS_DA_JANELA = datetime(2026, 9, 7, 20, 0, tzinfo=UTC)  # 17:00 em São Paul
 
 
 def test_acorda_todos_os_pedidos_vencidos() -> None:
-    vencidos = [_pedido("extra#1"), _pedido("diaria#672024065#2026-09-07")]
+    vencidos = [_pedido("extra#1"), _pedido("diaria#111111#2026-09-07")]
     reconciliador, _, despachante, _ = _reconciliador(vencidos, DEPOIS_DA_JANELA)
 
     quantidade = reconciliador.executar()
 
     assert quantidade == 2
-    assert despachante.acordados == ["extra#1", "diaria#672024065#2026-09-07"]
+    assert despachante.acordados == ["extra#1", "diaria#111111#2026-09-07"]
 
 
 def test_uma_falha_ao_acordar_nao_impede_os_demais() -> None:

@@ -6,7 +6,7 @@ DynamoDB.
 """
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -14,17 +14,44 @@ import pytest
 from moto import mock_aws
 
 from frase_diaria.aplicacao.criar_diaria import CriarDiaria
-from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
+from frase_diaria.aplicacao.portas import (
+    ChaveDeParte,
+    ConfirmacaoDeParte,
+    ConflitoDeConcorrencia,
+    ConteudoConfirmado,
+    IncertezaDeParte,
+    IntencaoDeParte,
+    TentativaDeParte,
+)
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.persistencia.migrar_pendencias import indexar_pedidos_legados
 from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
 
 TABELA = "frase-diaria-estado-teste"
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+def _confirmacao(
+    chave: ChaveDeParte,
+    conteudo: ConteudoConfirmado,
+    sequencial: int | None = None,
+) -> ConfirmacaoDeParte:
+    return ConfirmacaoDeParte(chave, conteudo, TentativaDeParte(INSTANTE, sequencial))
+
+
+def _intencao(chave: ChaveDeParte, texto: str, sequencial: int) -> IntencaoDeParte:
+    return IntencaoDeParte(chave, texto, TentativaDeParte(INSTANTE, sequencial))
+
+
+def _incerteza(chave: ChaveDeParte, motivo: str, sequencial: int) -> IncertezaDeParte:
+    return IncertezaDeParte(chave, motivo, TentativaDeParte(INSTANTE, sequencial))
+
+
+CHAT = 123456789
 PEDIDO = Pedido(
     identidade="extra#bot-ficticio#42",
     origem=Origem.EXTRA,
-    chat_id=123456789,
+    destinatarios=(CHAT,),
 )
 
 
@@ -63,6 +90,35 @@ def test_pedido_inexistente_devolve_none(repositorio: Any) -> None:
     assert repositorio.obter("extra#999") is None
 
 
+def test_multiplos_destinatarios_sobrevivem_a_gravar_e_recuperar(repositorio: Any) -> None:
+    diaria = Pedido(
+        identidade="diaria#2026-09-07", origem=Origem.DIARIA, destinatarios=(CHAT, 111222333)
+    )
+    repositorio.criar_se_ausente(diaria, INSTANTE)
+
+    assert repositorio.obter(diaria.identidade).destinatarios == (CHAT, 111222333)
+
+
+def test_pedido_legado_sem_campo_destinatarios_e_lido_com_o_chat_id_antigo(
+    repositorio: Any,
+) -> None:
+    """Compatibilidade retroativa (mesmo padrão de `bot_legado`/`estado_legado`):
+    pedidos gravados antes da v2 não têm `destinatarios`, só `chat_id`."""
+    repositorio.tabela.put_item(
+        Item={
+            "pk": "pedido#extra#legado",
+            "sk": "pedido",
+            "identidade": "extra#legado",
+            "origem": "extra",
+            "chat_id": CHAT,
+            "estado": "pendente",
+            "criado_em": INSTANTE.isoformat(),
+        }
+    )
+
+    assert repositorio.obter("extra#legado").destinatarios == (CHAT,)
+
+
 def test_salva_e_recupera_preservando_o_estado(repositorio: Any) -> None:
     repositorio.criar_se_ausente(PEDIDO, INSTANTE)
 
@@ -73,10 +129,22 @@ def test_salva_e_recupera_preservando_o_estado(repositorio: Any) -> None:
     assert recuperado is not None
     assert recuperado.identidade == "extra#bot-ficticio#42"
     assert recuperado.origem is Origem.EXTRA
-    assert recuperado.chat_id == 123456789
+    assert recuperado.destinatarios == (CHAT,)
     assert recuperado.estado is EstadoDoPedido.RESERVADO
     assert recuperado.frase_reservada == "bloco-7"
     assert recuperado.motivo_do_estado == "frase reservada"
+
+
+def test_partes_reservadas_sobrevivem_a_reinicio(repositorio: Any) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    reservado = replace(
+        PEDIDO.reservar("bloco-7"),
+        partes_reservadas=("primeira", "segunda"),
+    )
+
+    repositorio.salvar(reservado)
+
+    assert repositorio.obter(PEDIDO.identidade).partes_reservadas == ("primeira", "segunda")
 
 
 def test_o_prazo_sobrevive_a_gravar_e_recuperar(repositorio: Any) -> None:
@@ -137,27 +205,80 @@ def test_criar_repetido_nao_desfaz_o_progresso(repositorio: Any) -> None:
 
 
 def test_confirma_partes_e_lista_os_indices(repositorio: Any) -> None:
-    repositorio.confirmar_parte("extra#42", 0, "primeira", 901, INSTANTE)
-    repositorio.confirmar_parte("extra#42", 1, "segunda", 902, INSTANTE)
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("extra#42", CHAT, 0), ConteudoConfirmado("primeira", 901))
+    )
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("extra#42", CHAT, 1), ConteudoConfirmado("segunda", 902))
+    )
 
-    assert repositorio.indices_confirmados("extra#42") == {0, 1}
+    assert repositorio.indices_confirmados("extra#42", CHAT) == {0, 1}
 
 
 def test_a_parte_guarda_o_texto_efetivamente_enviado(repositorio: Any) -> None:
-    repositorio.confirmar_parte("extra#42", 0, "o que a usuária recebeu", 901, INSTANTE)
+    repositorio.confirmar_parte(
+        _confirmacao(
+            ChaveDeParte("extra#42", CHAT, 0), ConteudoConfirmado("o que a usuária recebeu", 901)
+        )
+    )
 
-    item = repositorio.tabela.get_item(Key={"pk": "pedido#extra#42", "sk": "parte#000"})["Item"]
+    item = repositorio.tabela.get_item(Key={"pk": "pedido#extra#42", "sk": f"parte#{CHAT}#000"})[
+        "Item"
+    ]
 
     assert item["texto"] == "o que a usuária recebeu"
     assert item["message_id"] == 901
 
 
-def test_partes_de_pedidos_distintos_nao_se_misturam(repositorio: Any) -> None:
-    repositorio.confirmar_parte("extra#42", 0, "de um", 901, INSTANTE)
-    repositorio.confirmar_parte("extra#43", 0, "de outro", 902, INSTANTE)
+def test_partes_de_destinatarios_distintos_no_mesmo_pedido_nao_se_misturam(
+    repositorio: Any,
+) -> None:
+    """v2: a mesma parte pode ter desfechos diferentes por destinatário."""
+    outro_destinatario = 111222333
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("diaria#2026-09-07", CHAT, 0), ConteudoConfirmado("de um", 901))
+    )
+    repositorio.confirmar_parte(
+        _confirmacao(
+            ChaveDeParte("diaria#2026-09-07", outro_destinatario, 0),
+            ConteudoConfirmado("de outro", 902),
+        )
+    )
 
-    assert repositorio.indices_confirmados("extra#42") == {0}
-    assert repositorio.indices_confirmados("extra#43") == {0}
+    assert repositorio.indices_confirmados("diaria#2026-09-07", CHAT) == {0}
+    assert repositorio.indices_confirmados("diaria#2026-09-07", outro_destinatario) == {0}
+
+
+def test_indice_de_status_encontra_a_ultima_diaria_sem_varrer_historico(
+    repositorio: Any,
+) -> None:
+    antiga = Pedido("diaria#2026-08-20", Origem.DIARIA, (CHAT,))
+    recente = Pedido("diaria#2026-09-01", Origem.DIARIA, (CHAT,))
+    repositorio.criar_se_ausente(antiga, INSTANTE)
+    repositorio.criar_se_ausente(recente, INSTANTE)
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte(antiga.identidade, CHAT, 0), ConteudoConfirmado("antiga", 901))
+    )
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte(recente.identidade, CHAT, 0), ConteudoConfirmado("recente", 902))
+    )
+
+    ultimo = repositorio.ultimo_pedido_do_destinatario(CHAT, date(2026, 9, 7))
+
+    assert ultimo is not None
+    assert ultimo.identidade == recente.identidade
+
+
+def test_partes_de_pedidos_distintos_nao_se_misturam(repositorio: Any) -> None:
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("extra#42", CHAT, 0), ConteudoConfirmado("de um", 901))
+    )
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("extra#43", CHAT, 0), ConteudoConfirmado("de outro", 902))
+    )
+
+    assert repositorio.indices_confirmados("extra#42", CHAT) == {0}
+    assert repositorio.indices_confirmados("extra#43", CHAT) == {0}
 
 
 def test_tentativas_se_acumulam_em_itens_separados(repositorio: Any) -> None:
@@ -219,7 +340,7 @@ def test_salvar_nao_ressuscita_um_pedido_inexistente(repositorio: Any) -> None:
     na tabela — um item sem `criado_em`, invisível para quem espera a criação
     idempotente ter passado por `criar_se_ausente`.
     """
-    fantasma = Pedido(identidade="extra#nunca-criado", origem=Origem.EXTRA, chat_id=1)
+    fantasma = Pedido(identidade="extra#nunca-criado", origem=Origem.EXTRA, destinatarios=(1,))
 
     with pytest.raises(Exception, match="ConditionalCheckFailed"):
         repositorio.salvar(fantasma.reservar("bloco-1"))
@@ -254,12 +375,12 @@ def test_leitura_do_pedido_e_fortemente_consistente(
 
 def test_diaria_repetida_usa_o_dia_local_e_preserva_terminal(repositorio: Any) -> None:
     evento = datetime(2026, 9, 8, 2, tzinfo=UTC)
-    criar = CriarDiaria(repositorio, chat_id=123456789)
+    criar = CriarDiaria(repositorio, destinatarios=(CHAT,))
     identidade = criar.executar(evento)
     pedido = repositorio.obter(identidade)
     repositorio.salvar(pedido.reservar("f1").iniciar_envio().concluir())
 
-    assert criar.executar(evento) == "diaria#123456789#2026-09-07"
+    assert criar.executar(evento) == "diaria#2026-09-07"
     assert repositorio.obter(identidade).estado is EstadoDoPedido.ENVIADO
 
 
@@ -288,8 +409,10 @@ def test_chave_do_bot_original_preserva_leitura_e_replay_da_versao_anterior(
     assert recuperado is not None
     assert recuperado.estado is EstadoDoPedido.RESERVADO
     assert not repositorio.criar_se_ausente(replace(PEDIDO, identidade="extra#42"), INSTANTE)
-    atual.confirmar_parte(PEDIDO.identidade, 0, "texto", 1, INSTANTE)
-    assert repositorio.indices_confirmados("extra#42") == {0}
+    atual.confirmar_parte(
+        _confirmacao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), ConteudoConfirmado("texto", 1))
+    )
+    assert repositorio.indices_confirmados("extra#42", CHAT) == {0}
 
 
 def test_pedido_legado_terminal_e_reconhecido_sem_criar_outro(repositorio: Any) -> None:
@@ -356,11 +479,16 @@ def test_consultas_percorrem_todas_as_paginas(
     monkeypatch.setattr(repositorio.tabela, "query", pagina_pequena)
     for indice in range(3):
         repositorio.criar_se_ausente(replace(PEDIDO, identidade=f"pedido-{indice}"), INSTANTE)
-        repositorio.confirmar_parte(PEDIDO.identidade, indice, "texto", 900 + indice, INSTANTE)
+        repositorio.confirmar_parte(
+            _confirmacao(
+                ChaveDeParte(PEDIDO.identidade, CHAT, indice),
+                ConteudoConfirmado("texto", 900 + indice),
+            )
+        )
         repositorio.registrar_tentativa(PEDIDO.identidade, "erro", None, INSTANTE)
 
     assert len(repositorio.buscar_vencidos(INSTANTE)) == 3
-    assert repositorio.indices_confirmados(PEDIDO.identidade) == {0, 1, 2}
+    assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {0, 1, 2}
     assert len(repositorio.listar_tentativas(PEDIDO.identidade)) == 3
 
 
@@ -385,7 +513,9 @@ def test_adocao_dos_legados_e_aditiva_paginada_e_reexecutavel(
                 "criado_em": INSTANTE.isoformat(),
             }
         )
-    repositorio.confirmar_parte("antigo", 0, "histórico preservado", 1, INSTANTE)
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte("antigo", CHAT, 0), ConteudoConfirmado("histórico preservado", 1))
+    )
     scan = repositorio.tabela.scan
 
     def pagina_pequena(**argumentos: Any) -> Any:
@@ -396,7 +526,7 @@ def test_adocao_dos_legados_e_aditiva_paginada_e_reexecutavel(
     assert indexar_pedidos_legados(repositorio.tabela) == 1
     assert indexar_pedidos_legados(repositorio.tabela) == 0
     assert [p.identidade for p in repositorio.buscar_vencidos(INSTANTE)] == ["antigo"]
-    assert repositorio.indices_confirmados("antigo") == {0}
+    assert repositorio.indices_confirmados("antigo", CHAT) == {0}
 
 
 # --- lease e concorrência (ticket 09) -----------------------------------------
@@ -464,7 +594,150 @@ def test_confirmar_parte_recusa_um_sequencial_que_ja_nao_e_dono_do_lease(reposit
     repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
 
     with pytest.raises(ConflitoDeConcorrencia):
-        repositorio.confirmar_parte(PEDIDO.identidade, 0, "texto", 901, INSTANTE, sequencial=1)
+        repositorio.confirmar_parte(
+            _confirmacao(
+                ChaveDeParte(PEDIDO.identidade, CHAT, 0), ConteudoConfirmado("texto", 901), 1
+            )
+        )
 
-    repositorio.confirmar_parte(PEDIDO.identidade, 0, "texto", 901, INSTANTE, sequencial=2)
-    assert repositorio.indices_confirmados(PEDIDO.identidade) == {0}
+    repositorio.confirmar_parte(
+        _confirmacao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), ConteudoConfirmado("texto", 901), 2)
+    )
+    assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {0}
+
+
+def test_total_de_partes_sobrevive_a_reabertura_e_transicoes(repositorio: Any) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    enviando = replace(PEDIDO.reservar("bloco-1").iniciar_envio(), total_de_partes=2)
+    repositorio.salvar(enviando, 1)
+
+    reaberto = RepositorioDePedidosDynamo(repositorio.tabela)
+    recuperado = reaberto.obter(PEDIDO.identidade)
+
+    assert recuperado is not None
+    assert recuperado.total_de_partes == 2
+    reaberto.salvar(recuperado.marcar_incerto("sem confirmação"), 1)
+    assert repositorio.obter(PEDIDO.identidade).total_de_partes == 2
+
+
+def test_falha_individual_sobrevive_a_reabertura_e_lease_superado_nao_a_altera(
+    repositorio: Any,
+) -> None:
+    diaria = Pedido("diaria#2026-09-07", Origem.DIARIA, (101, 202))
+    repositorio.criar_se_ausente(diaria, INSTANTE)
+    repositorio.assumir_lease(diaria.identidade, 1, INSTANTE, timedelta(minutes=5))
+    enviando = replace(
+        diaria.reservar("bloco-1").iniciar_envio(),
+        total_de_partes=2,
+        destinatarios_com_falha=(101,),
+    )
+    repositorio.salvar(enviando, 1)
+    reaberto = RepositorioDePedidosDynamo(repositorio.tabela)
+
+    recuperado = reaberto.obter(diaria.identidade)
+    assert recuperado is not None
+    assert recuperado.destinatarios_com_falha == (101,)
+    reaberto.assumir_lease(diaria.identidade, 2, INSTANTE, timedelta(minutes=5))
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.salvar(replace(enviando, total_de_partes=5, destinatarios_com_falha=()), 1)
+    recuperado = reaberto.obter(diaria.identidade)
+    assert recuperado is not None
+    assert recuperado.destinatarios_com_falha == (101,)
+    assert recuperado.total_de_partes == 2
+
+
+@pytest.mark.parametrize("confirmar", [False, True])
+def test_executor_superado_nao_converte_intencao_do_novo_dono_em_incerta(
+    repositorio: Any,
+    confirmar: bool,
+) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.registrar_intencao_parte(
+        _intencao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "texto fictício", 1)
+    )
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == {0}
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+    if confirmar:
+        repositorio.confirmar_parte(
+            _confirmacao(
+                ChaveDeParte(PEDIDO.identidade, CHAT, 0),
+                ConteudoConfirmado("texto fictício", 901),
+                2,
+            )
+        )
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.marcar_parte_incerta(
+            _incerteza(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "sem confirmação", 1)
+        )
+
+    assert repositorio.indices_incertos(PEDIDO.identidade, CHAT) == set()
+    if confirmar:
+        assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {0}
+    else:
+        assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == {0}
+
+
+def test_converter_intencao_em_incerta_preserva_texto_e_recusa_confirmacao(
+    repositorio: Any,
+) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.registrar_intencao_parte(
+        _intencao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "texto fictício", 1)
+    )
+
+    repositorio.marcar_parte_incerta(
+        _incerteza(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "sem confirmação", 1)
+    )
+
+    assert repositorio.indices_incertos(PEDIDO.identidade, CHAT) == {0}
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == set()
+    # Contrato do armazenamento: a conversão preserva o conteúdo da intenção.
+    item = repositorio.tabela.get_item(
+        Key={"pk": f"pedido#{PEDIDO.identidade}", "sk": f"parte#{CHAT}#000"}
+    )["Item"]
+    assert item["texto"] == "texto fictício"
+    repositorio.confirmar_parte(
+        _confirmacao(
+            ChaveDeParte(PEDIDO.identidade, CHAT, 1), ConteudoConfirmado("confirmado", 902), 1
+        )
+    )
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.marcar_parte_incerta(
+            _incerteza(ChaveDeParte(PEDIDO.identidade, CHAT, 1), "sem confirmação", 1)
+        )
+    assert repositorio.indices_confirmados(PEDIDO.identidade, CHAT) == {1}
+
+
+def test_executor_superado_nao_registra_intencao(repositorio: Any) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.registrar_intencao_parte(
+            _intencao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "texto fictício", 1)
+        )
+
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == set()
+
+
+def test_executor_superado_nao_descarta_intencao(repositorio: Any) -> None:
+    repositorio.criar_se_ausente(PEDIDO, INSTANTE)
+    repositorio.assumir_lease(PEDIDO.identidade, 1, INSTANTE, timedelta(minutes=5))
+    repositorio.registrar_intencao_parte(
+        _intencao(ChaveDeParte(PEDIDO.identidade, CHAT, 0), "texto fictício", 1)
+    )
+    repositorio.assumir_lease(PEDIDO.identidade, 2, INSTANTE, timedelta(minutes=5))
+
+    with pytest.raises(ConflitoDeConcorrencia):
+        repositorio.descartar_intencao_parte(ChaveDeParte(PEDIDO.identidade, CHAT, 0), 1)
+
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == {0}
+
+    repositorio.descartar_intencao_parte(ChaveDeParte(PEDIDO.identidade, CHAT, 0), 2)
+
+    assert repositorio.indices_intencoes(PEDIDO.identidade, CHAT) == set()

@@ -1,5 +1,9 @@
 # Reconciliador de publicações e compatibilidade de dados
 
+> **Estado atual (auditoria de 2026-09-16):** o workflow usa um papel próprio de
+> reconciliação, o environment protegido `producao`, ARN em variável do
+> repositório e fallback para o arquivo durável de artefatos no S3.
+
 ## Comportamento
 
 Um novo workflow, `.github/workflows/reconciliador.yml`, roda de hora em
@@ -21,13 +25,13 @@ reagir:
    do ticket 19. Sem sucesso, desabilita o agendamento diário e abre uma
    issue, mesmo padrão também.
 
-Roda a partir de `main` com o papel `frase-diaria-infraestrutura`, agora
+Roda a partir de `main` com o papel `frase-diaria-reconciliacao`,
 ampliado (`infra/bootstrap.yaml`) com as mesmas permissões de deploy do
 papel de publicação — antes só lia o estado da stack, sem poder agir.
 
 ## Decisão técnica
 
-**Papel de infraestrutura ampliado, decisão confirmada pela usuária.**
+**Papel de reconciliação com escopo de recuperação.**
 Criado só-leitura no ticket 16 ("a lógica de recuperação ainda não
 existia"); agora precisa republicar de verdade. Escopado exatamente igual
 ao papel de publicação — mesma stack `frase-diaria-app`, nunca a stack de
@@ -44,7 +48,7 @@ enviar; `infra/bootstrap.yaml` vai direto via `aws cloudformation deploy`,
 sem essa etapa. Revertido para duplicação explícita das 10 statements, com
 um comentário de aviso no bloco de origem (`PapelDePublicacao`) apontando
 para o bloco duplicado — mantê-los em sincronia manualmente é o trade-off
-aceito, análogo à duplicação da lógica de download+deploy descrita abaixo.
+aceito.
 
 **Incidente real ao aplicar: `UPDATE_ROLLBACK_FAILED`.** A primeira
 tentativa de aplicar a nova policy também mudava o texto da `Description`
@@ -54,20 +58,17 @@ local (`user/aws-developer-group`) não tem — o `UPDATE` falhou, e o
 em `UPDATE_ROLLBACK_FAILED`. Nenhuma mutação real chegou a ser aplicada
 (conferido: `aws iam get-role` mostrou o papel intacto, no estado
 anterior). Destravado com
-`aws cloudformation continue-update-rollback --resources-to-skip PapelDeInfraestrutura`,
+`aws cloudformation continue-update-rollback --resources-to-skip <PAPEL_DE_RECONCILIACAO>`,
 e a `Description` do papel mantida inalterada na segunda tentativa — que
 aplicou só a mudança de policy (`iam:PutRolePolicy`, ação que já tinha
 funcionado nas mutações anteriores desta sessão) e completou
 `UPDATE_COMPLETE`.
 
-**Lógica de download+deploy duplicada do ticket 19, não extraída para uma
-composite action compartilhada.** O passo "Recuperar" do job `publicar`
-(ticket 19) já está exercitado ao vivo várias vezes contra produção real
-nesta sessão. Refatorá-lo para extrair uma composite action reutilizável
-aqui arriscaria reintroduzir uma regressão sutil (como o `always()`
-faltando, achado só ao vivo) sem tempo de reexercitar com o mesmo rigor.
-Trade-off deliberado, não descuido — a mesma decisão já tomada para as
-policies IAM duplicadas acima.
+**Obtenção e verificação do artefato são compartilhadas.** A composite
+action `.github/actions/obter-artefato` atende tanto a recuperação síncrona
+do job `publicar` quanto o reconciliador. Ela tenta primeiro o cache do
+Actions, recorre ao arquivo durável no S3 e só libera o deploy quando o
+conteúdo confere com o checksum registrado na implantação saudável.
 
 **Detecção de "PR fechado sem merge" por comparação, não por evento.**
 Sem escutar o evento `pull_request: closed` diretamente (que exigiria
@@ -101,7 +102,7 @@ construção: se a versão ativa já é a estável, não faz nada.
 - **Exercitado ao vivo após o merge do PR #2, sessão de 2026-09-08.**
   `gh workflow run reconciliador.yml --ref main` disparado logo depois do
   merge para `main`. Claim `sub` do OIDC confirmado contra o token real:
-  `repo:soamazyng@443219/frase-diaria-telegram@1359588301:ref:refs/heads/main`
+  `repo:<GITHUB_OWNER>@<GITHUB_OWNER_ID>/frase-diaria-telegram@<GITHUB_REPOSITORY_ID>:ref:refs/heads/main`
   — exatamente o formato já assumido na trust policy do papel de
   infraestrutura (`infra/bootstrap.yaml`). `AssumeRoleWithWebIdentity`
   funcionou de primeira; passo de debug removido neste commit. A ampliação
@@ -109,15 +110,15 @@ construção: se a versão ativa já é a estável, não faz nada.
   (`sam deploy` real na tentativa de reconciliação abaixo).
 - **Achado real: "versão estável" presume merge fast-forward, e
   `gh pr merge --merge` não é fast-forward.** O passo "Avaliar" comparou o
-  HEAD de `main` (commit de merge `100e337`, criado pelo merge do PR #2)
-  contra a versão publicada (`8fc30fa`, o commit de `develop` testado pelo
+  HEAD de `main` (commit de merge `<COMMIT_SHA>`, criado pelo merge do PR #2)
+  contra a versão publicada (`<COMMIT_SHA>`, o commit de `develop` testado pelo
   pipeline) e viu divergência real — mas um commit de merge tradicional
   sempre gera um SHA novo que nunca passou pelo CI/CD, então nenhum
-  artefato existia para `100e337` (`gh api .../actions/artifacts?name=...`
+  artefato existia para `<COMMIT_SHA>` (`gh api .../actions/artifacts?name=...`
   vazio). A reconciliação seguiu o caminho de falha por desenho: **abriu a
   issue #4** e **desabilitou de verdade o agendamento diário**
   (`frase-diaria-agendador-diario` → `DISABLED`). Não é uma falha de
-  publicação — a versão em produção (`8fc30fa`) sempre esteve correta e
+  publicação — a versão em produção (`<COMMIT_SHA>`) sempre esteve correta e
   saudável. Reativado manualmente (`aws scheduler update-schedule` →
   `ENABLED`, confirmado) e a issue #4 comentada explicando o falso positivo
   e fechada, minutos depois do incidente. **Causa raiz não corrigida nesta
@@ -128,16 +129,16 @@ construção: se a versão ativa já é a estável, não faz nada.
   minutos, então o passo não teve o que reconciliar.
 - **Mesmo achado, segundo efeito real: o guard de publicação do próprio
   ticket 18 também quebrou.** O push seguinte para `develop` (commit
-  `58d2efd`, este ticket) foi bloqueado pelo passo "Reconsultar PR aberto,
+  `<COMMIT_SHA>`, este ticket) foi bloqueado pelo passo "Reconsultar PR aberto,
   SHA atual e base de main" — `gh api compare/main...develop` acusou
   `diverged`, não `ahead`, porque `develop` nunca incorporou de volta o
-  commit de merge `100e337`. Abortou com segurança **antes** de tocar o
-  deploy (produção seguiu em `8fc30fa`, saudável) — o guard funcionou
+  commit de merge `<COMMIT_SHA>`. Abortou com segurança **antes** de tocar o
+  deploy (produção seguiu em `<COMMIT_SHA>`, saudável) — o guard funcionou
   exatamente como desenhado, só que a suposição por trás dele (histórico
   linear entre `develop` e `main`) já não era mais verdadeira depois de um
   merge commit. Corrigido mesclando `main` de volta em `develop`
-  (`dffa16f`, sem mudança de conteúdo) — publicação seguinte confirmada
-  verde, versão ativa = `dffa16f` (exatamente o SHA testado). Padrão usual
+  (`<COMMIT_SHA>`, sem mudança de conteúdo) — publicação seguinte confirmada
+  verde, versão ativa = `<COMMIT_SHA>` (exatamente o SHA testado). Padrão usual
   de git-flow após merge de release, mas **precisa virar prática
   obrigatória documentada**, não uma correção pontual — ver "Próximo
   passo".
@@ -171,7 +172,7 @@ em si:
   também corrige de quebra o problema do artefato "retenção expirada" —
   agora aponta para o SHA que de fato passou pelo CI e tem artefato.
 
-**Consequência: o merge manual de `main` de volta em `develop` (`dffa16f`,
+**Consequência: o merge manual de `main` de volta em `develop` (`<COMMIT_SHA>`,
 feito ao vivo para destravar o pipeline) deixa de ser necessário daqui
 para frente.** A comparação agora resolve corretamente sem precisar que
 `develop` contenha o commit de merge como ancestral — ele já contém
@@ -179,10 +180,10 @@ naturalmente `parents[1]` (é o próprio histórico de `develop`).
 `actionlint`/`shellcheck` sem achados nos dois arquivos após o fix.
 
 **Validado contra o cenário real que causou o incidente original.** Após
-o fix publicado (`cc92ecb`), a PR #5 (`develop -> main`, contendo essa
-mesma correção) foi mergeada (`0407c8a`) e o reconciliador disparado
+o fix publicado (`<COMMIT_SHA>`), a PR #5 (`develop -> main`, contendo essa
+mesma correção) foi mergeada (`<COMMIT_SHA>`) e o reconciliador disparado
 manualmente de novo, sem PR aberto — a repetição exata do cenário que
-causou o falso positivo. Desta vez: `"Versão ativa (cc92ecb...) já é a
+causou o falso positivo. Desta vez: `"Versão ativa (<COMMIT_SHA>) já é a
 estável; nada a fazer (idempotente)."` — nenhum passo de reconciliação,
 nenhuma issue aberta, agendamento diário permaneceu `ENABLED`. Fix
 confirmado.

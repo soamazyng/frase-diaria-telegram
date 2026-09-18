@@ -13,7 +13,9 @@ from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 
 
 def _pedido() -> Pedido:
-    return Pedido(identidade="extra#bot-ficticio#42", origem=Origem.EXTRA, chat_id=123456789)
+    return Pedido(
+        identidade="extra#bot-ficticio#42", origem=Origem.EXTRA, destinatarios=(123456789,)
+    )
 
 
 def test_nasce_pendente_e_sem_frase_reservada() -> None:
@@ -42,18 +44,18 @@ def test_identidade_de_um_extra_vem_do_update_id() -> None:
     assert Pedido.identidade_de_extra(bot="bot-ficticio", update_id=42) == "extra#bot-ficticio#42"
 
 
-def test_identidade_diaria_combina_conversa_e_dia_local() -> None:
-    assert (
-        Pedido.identidade_de_diaria(chat_id=123456789, dia=date(2026, 9, 7))
-        == "diaria#123456789#2026-09-07"
-    )
+def test_identidade_diaria_combina_com_o_dia_local() -> None:
+    """A partir da v2, a diária é um único pedido para todo o conjunto de
+    destinatários — a identidade não carrega mais um chat_id específico
+    (spec v2, `.scratch/v2-telegram-bot.md`)."""
+    assert Pedido.identidade_de_diaria(dia=date(2026, 9, 7)) == "diaria#2026-09-07"
 
 
 def test_dia_alvo_da_diaria_vem_da_identidade() -> None:
     diaria = Pedido(
-        identidade=Pedido.identidade_de_diaria(chat_id=123456789, dia=date(2026, 9, 7)),
+        identidade=Pedido.identidade_de_diaria(dia=date(2026, 9, 7)),
         origem=Origem.DIARIA,
-        chat_id=123456789,
+        destinatarios=(123456789,),
     )
 
     assert diaria.dia_alvo_da_diaria() == date(2026, 9, 7)
@@ -64,9 +66,10 @@ def test_dia_alvo_da_diaria_e_none_para_um_extra() -> None:
 
 
 def test_identidades_de_parte_e_tentativa_pertencem_ao_pedido() -> None:
-    assert Pedido.identidade_de_parte("extra#bot-ficticio#42", indice=3) == (
-        "extra#bot-ficticio#42#parte#3"
+    identidade_de_parte = Pedido.identidade_de_parte(
+        "extra#bot-ficticio#42", destinatario=123456789, indice=3
     )
+    assert identidade_de_parte == "extra#bot-ficticio#42#dest#123456789#parte#3"
     assert Pedido.identidade_de_tentativa("extra#bot-ficticio#42", sequencial=2) == (
         "extra#bot-ficticio#42#tentativa#2"
     )
@@ -146,9 +149,9 @@ def test_aguardar_tentativa_sem_novo_prazo_preserva_o_proximo_instante() -> None
     # A retentativa por contenção de ciclo (ticket 09) não muda o agendamento.
     original = date(2026, 9, 7)
     pedido = Pedido(
-        identidade="diaria#123#2026-09-07",
+        identidade="diaria#2026-09-07",
         origem=Origem.DIARIA,
-        chat_id=123,
+        destinatarios=(123,),
         proxima_tentativa=datetime(2026, 9, 7, 11, 0, tzinfo=UTC),
     )
     assert original  # apenas para deixar claro que a data não participa aqui
@@ -237,7 +240,7 @@ def test_pedido_pode_nascer_com_um_prazo_explicito() -> None:
     prazo = datetime(2026, 9, 7, 15, 0, tzinfo=UTC)
 
     pedido = Pedido(
-        identidade="diaria#123#2026-09-07", origem=Origem.DIARIA, chat_id=123, prazo=prazo
+        identidade="diaria#2026-09-07", origem=Origem.DIARIA, destinatarios=(123,), prazo=prazo
     )
 
     assert pedido.prazo == prazo
@@ -251,3 +254,22 @@ def test_transicao_invalida_e_rejeitada() -> None:
 def test_motivo_vazio_e_rejeitado() -> None:
     with pytest.raises(ValueError, match="motivo"):
         _pedido().aguardar_tentativa("")
+
+
+# --- múltiplos destinatários (ticket 25) --------------------------------------
+
+
+def test_pedido_pode_ter_varios_destinatarios() -> None:
+    """A diária compartilhada carrega todos os destinatários autorizados."""
+    diaria = Pedido(
+        identidade=Pedido.identidade_de_diaria(dia=date(2026, 9, 7)),
+        origem=Origem.DIARIA,
+        destinatarios=(123456789, 111222333),
+    )
+
+    assert diaria.destinatarios == (123456789, 111222333)
+
+
+def test_pedido_sem_nenhum_destinatario_e_rejeitado() -> None:
+    with pytest.raises(ValueError, match="destinatário"):
+        Pedido(identidade="extra#bot-ficticio#42", origem=Origem.EXTRA, destinatarios=())

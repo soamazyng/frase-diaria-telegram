@@ -59,13 +59,14 @@ class ReservaTransacional:
                             "UpdateExpression": (
                                 "SET estado = :e, estado_atual = :atual, "
                                 "frase_reservada = :f, motivo_do_estado = :m, "
-                                "lease_dono = :seq"
+                                "partes_reservadas = :partes, lease_dono = :seq"
                             ),
                             "ExpressionAttributeValues": {
                                 ":e": pedido.estado_legado,
                                 ":atual": pedido.estado.value,
                                 ":f": pedido.frase_reservada or "",
                                 ":m": pedido.motivo_do_estado,
+                                ":partes": list(pedido.partes_reservadas or ()),
                                 ":pendente": "pendente",
                                 ":aguardando": "aguardando_tentativa",
                                 ":seq": sequencial,

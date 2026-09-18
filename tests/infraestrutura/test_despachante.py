@@ -45,9 +45,9 @@ def test_pedir_status_invoca_a_mesma_funcao_worker() -> None:
     # terceira função só para isto seria superfície de ataque sem benefício.
     cliente = ClienteEspiao()
 
-    DespachanteLambda(nome_da_funcao="frase-diaria-worker", cliente=cliente).pedir_status(672024065)
+    DespachanteLambda(nome_da_funcao="frase-diaria-worker", cliente=cliente).pedir_status(111111)
 
     chamada = cliente.chamadas[0]
     assert chamada["FunctionName"] == "frase-diaria-worker"
     assert chamada["InvocationType"] == "Event"
-    assert json.loads(chamada["Payload"]) == {"status_chat_id": 672024065}
+    assert json.loads(chamada["Payload"]) == {"status_chat_id": 111111}

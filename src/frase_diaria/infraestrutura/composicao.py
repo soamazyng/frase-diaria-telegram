@@ -5,13 +5,21 @@ uso. Tudo que ele monta é injetável, para que os testes nunca precisem dele.
 """
 
 import os
-from functools import lru_cache
+import random
+import time
+from contextlib import suppress
+from functools import cache, lru_cache
 from typing import Any
 
 import boto3
 
 from frase_diaria.aplicacao.consultar_status import ConsultarStatus, EnviarStatus
 from frase_diaria.aplicacao.criar_diaria import CriarDiaria
+from frase_diaria.aplicacao.encerrar_pedido import (
+    EncerrarPedido,
+    PoliticaDeContencaoDoCiclo,
+)
+from frase_diaria.aplicacao.entregar_pedido import EntregadorDePedido
 from frase_diaria.aplicacao.portas import Relogio
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido
 from frase_diaria.aplicacao.receber_comando import Desfecho, ReceberComando
@@ -29,9 +37,12 @@ from frase_diaria.persistencia.colecao import RepositorioDeColecaoDynamo
 from frase_diaria.persistencia.comandos import RepositorioDeComandosDynamo
 from frase_diaria.persistencia.pedidos import RepositorioDePedidosDynamo
 from frase_diaria.persistencia.reserva import ReservaTransacional
+from frase_diaria.telegram.atualizacao import interpretar
 from frase_diaria.telegram.canal import TelegramHttp
+from frase_diaria.telegram.status import formatar_status
 
 PREFIXO_DOS_PARAMETROS = "/frase-diaria/"
+PARAMETRO_OPCIONAL_DO_BOT_LEGADO = "telegram-bot-legado-id"
 
 
 def _bot_legado(guardados: dict[str, str]) -> str:
@@ -40,24 +51,49 @@ def _bot_legado(guardados: dict[str, str]) -> str:
     return guardados.get("telegram-bot-legado-id") or token.split(":", 1)[0]
 
 
-@lru_cache(maxsize=1)
-def segredos() -> dict[str, str]:
-    """Lê os segredos do Parameter Store uma vez por container.
+def _destinatarios_autorizados(guardados: dict[str, str]) -> frozenset[int]:
+    """Lê o conjunto de destinatários autorizados (spec v2, `telegram-chat-ids`).
 
-    Cachear no processo evita uma chamada ao SSM por requisição. Em contrapartida,
-    trocar um parâmetro só vale de imediato depois de republicar — containers
-    quentes seguem com o valor antigo.
+    Uma lista separada por vírgula num único parâmetro, não um parâmetro por
+    destinatário — decisão do ticket 23. Espaços ao redor de cada valor são
+    tolerados na leitura; nenhum é exigido ao gravar o parâmetro.
+
+    Um parâmetro vazio, só de vírgulas ou só de espaços falha alto: sem essa
+    checagem, `PoliticaDeAcesso` receberia um conjunto vazio e recusaria
+    silenciosamente todo mundo, inclusive a usuária — o mesmo tipo de defeito
+    de configuração que passa por qualquer suíte (rules.md, "O que os testes
+    não pegam").
+    """
+    valores = guardados["telegram-chat-ids"].split(",")
+    destinatarios = frozenset(int(valor.strip()) for valor in valores if valor.strip())
+    if not destinatarios:
+        raise ValueError("telegram-chat-ids não contém nenhum destinatário autorizado")
+    return destinatarios
+
+
+@cache
+def _parametro(nome: str) -> str:
+    """Lê um parâmetro exato do Parameter Store uma vez por container.
+
+    Cada função pede somente os valores usados pelo próprio caso de uso. Isso
+    permite que a policy de execução conceda acesso a ARNs exatos e diferentes
+    para HTTP, worker, agendador e reconciliador.
     """
     cliente = boto3.client("ssm")
-    # Paginado: `get_parameters_by_path` devolve no máximo 10 por chamada, e uma
-    # leitura de página única passaria a faltar segredos silenciosamente quando o
-    # projeto crescer (o token do Notion chega no ticket 10).
-    paginas = cliente.get_paginator("get_parameters_by_path").paginate(
-        Path=PREFIXO_DOS_PARAMETROS, WithDecryption=True, Recursive=False
+    resposta = cliente.get_parameter(
+        Name=f"{PREFIXO_DOS_PARAMETROS}{nome}",
+        WithDecryption=True,
     )
-    return {
-        p["Name"].rsplit("/", 1)[-1]: p["Value"] for pagina in paginas for p in pagina["Parameters"]
-    }
+    return str(resposta["Parameter"]["Value"])
+
+
+def segredos(*nomes: str) -> dict[str, str]:
+    """Carrega apenas os parâmetros exigidos pelo caso de uso atual."""
+    guardados = {nome: _parametro(nome) for nome in nomes}
+    cliente = boto3.client("ssm")
+    with suppress(cliente.exceptions.ParameterNotFound):
+        guardados[PARAMETRO_OPCIONAL_DO_BOT_LEGADO] = _parametro(PARAMETRO_OPCIONAL_DO_BOT_LEGADO)
+    return guardados
 
 
 @lru_cache(maxsize=1)
@@ -76,34 +112,39 @@ def montar_despachante() -> DespachanteLambda:
 
 def montar_receber_comando() -> ReceberComando:
     """A fronteira HTTP: valida, registra e despacha — nunca entrega a frase."""
-    guardados = segredos()
+    guardados = segredos("telegram-bot-token", "telegram-chat-ids", "webhook-secret")
     bot_legado = _bot_legado(guardados)
     return ReceberComando(
         politica=PoliticaDeAcesso(
             segredo_esperado=guardados["webhook-secret"],
-            chat_id_autorizado=int(guardados["telegram-chat-id"]),
+            chat_ids_autorizados=_destinatarios_autorizados(guardados),
         ),
         repositorio=RepositorioDeComandosDynamo(tabela=_tabela()),
         canal=TelegramHttp(token=guardados["telegram-bot-token"]),
         relogio=RelogioDoSistema(),
         pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
+        interpretar=interpretar,
         bot=guardados["telegram-bot-token"].split(":", 1)[0],
         despachante=montar_despachante(),
     )
 
 
 def montar_criar_diaria() -> CriarDiaria:
-    """Materializa o pedido diário — chamada pelo agendador e pelo reconciliador."""
-    guardados = segredos()
+    """Materializa o pedido diário — chamada pelo agendador e pelo reconciliador.
+
+    Lê `telegram-chat-ids` (v2): o mesmo conjunto de destinatários autorizados
+    do webhook recebe a diária, com uma única reserva/consumo de frase.
+    """
+    guardados = segredos("telegram-bot-token", "telegram-chat-ids")
     return CriarDiaria(
         pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=_bot_legado(guardados)),
-        chat_id=int(guardados["telegram-chat-id"]),
+        destinatarios=tuple(_destinatarios_autorizados(guardados)),
     )
 
 
 def montar_reconciliar_pendencias() -> ReconciliarPendencias:
     """O reconciliador periódico: acorda pedidos vencidos e cobre a diária ausente."""
-    guardados = segredos()
+    guardados = segredos("telegram-bot-token", "telegram-chat-ids")
     bot_legado = _bot_legado(guardados)
     return ReconciliarPendencias(
         pedidos=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
@@ -131,21 +172,29 @@ def montar_processar_pedido() -> ProcessarPedido:
     `FonteDeFrasesNotion` é um placeholder até a renderização rica do
     ticket 12.
     """
-    guardados = segredos()
+    guardados = segredos("telegram-bot-token", "notion-token", "notion-pagina-id")
     bot_legado = _bot_legado(guardados)
     relogio = RelogioDoSistema()
     sincronizar = _montar_sincronizar_colecao(guardados, relogio)
+    repositorio = RepositorioDePedidosDynamo(
+        tabela=_tabela(),
+        versao=os.environ["VERSAO_DA_APLICACAO"],
+        bot_legado=bot_legado,
+    )
+    canal = TelegramHttp(token=guardados["telegram-bot-token"])
+    ciclos = RepositorioDeCiclosDynamo(tabela=_tabela())
     return ProcessarPedido(
-        repositorio=RepositorioDePedidosDynamo(
-            tabela=_tabela(),
-            versao=os.environ["VERSAO_DA_APLICACAO"],
-            bot_legado=bot_legado,
-        ),
+        repositorio=repositorio,
         fonte=FonteDeFrasesNotion(sincronizar=sincronizar),
-        canal=TelegramHttp(token=guardados["telegram-bot-token"]),
+        entregador=EntregadorDePedido(repositorio, canal, relogio, random.uniform),
+        encerrador=EncerrarPedido(
+            repositorio,
+            ciclos,
+            PoliticaDeContencaoDoCiclo(time.sleep, random.uniform),
+        ),
         sorteio=SorteioAleatorio(),
         relogio=relogio,
-        ciclos=RepositorioDeCiclosDynamo(tabela=_tabela()),
+        ciclos=ciclos,
         reserva=ReservaTransacional(tabela=_tabela(), bot_legado=bot_legado),
     )
 
@@ -158,7 +207,7 @@ def montar_enviar_status(chat_id: int) -> EnviarStatus:
     reconciliador), gravada por `SincronizarColecao`; disparar uma nova só
     para responder à consulta apagaria a última falha assim que desse certo.
     """
-    guardados = segredos()
+    guardados = segredos("telegram-bot-token")
     bot_legado = _bot_legado(guardados)
     consultar = ConsultarStatus(
         repositorio=RepositorioDePedidosDynamo(tabela=_tabela(), bot_legado=bot_legado),
@@ -167,7 +216,9 @@ def montar_enviar_status(chat_id: int) -> EnviarStatus:
         chat_id=chat_id,
     )
     return EnviarStatus(
-        consultar=consultar, canal=TelegramHttp(token=guardados["telegram-bot-token"])
+        consultar=consultar,
+        canal=TelegramHttp(token=guardados["telegram-bot-token"]),
+        formatar=formatar_status,
     )
 
 

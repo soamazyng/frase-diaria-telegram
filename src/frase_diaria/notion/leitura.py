@@ -50,7 +50,7 @@ class LeitorDeColecao:
                 # Subpáginas e o projeto inteiro são apenas mais uma subpágina.
                 continue
             if tipo != TIPO_ITEM_NUMERADO:
-                descricao = f"bloco {bloco.get('id')} solto no nível da coleção (tipo {tipo!r})"
+                descricao = f"bloco solto no nível da coleção (tipo {tipo!r})"
                 diagnosticos.append(Diagnostico(categoria="conteudo_solto", descricao=descricao))
                 continue
 
@@ -99,7 +99,7 @@ class LeitorDeColecao:
             diagnosticos.append(
                 Diagnostico(
                     categoria="acesso_negado",
-                    descricao=f"sem acesso às discussões do bloco {bloco_id}",
+                    descricao="sem acesso às discussões de um bloco",
                 )
             )
             return ()

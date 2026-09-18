@@ -8,6 +8,7 @@ A condição de versão no ciclo e de lease no pedido é o que decide, entre doi
 executores concorrentes, qual dos dois efetiva a reserva (ticket 09).
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,7 +25,7 @@ from frase_diaria.persistencia.reserva import ReservaTransacional
 
 TABELA = "frase-diaria-estado-teste"
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
-PEDIDO = Pedido(identidade="extra#42", origem=Origem.EXTRA, chat_id=672024065)
+PEDIDO = Pedido(identidade="extra#42", origem=Origem.EXTRA, destinatarios=(111111,))
 
 
 @pytest.fixture
@@ -55,7 +56,8 @@ def test_efetivar_grava_ciclo_e_pedido(contexto: Any) -> None:
     contexto["pedidos"].criar_se_ausente(PEDIDO, INSTANTE)
     ciclo = Ciclo.primeiro().reservar("f1")
 
-    contexto["reserva"].efetivar(PEDIDO.reservar("f1"), ciclo, 0, sequencial=1)
+    reservado = replace(PEDIDO.reservar("f1"), partes_reservadas=("texto",))
+    contexto["reserva"].efetivar(reservado, ciclo, 0, sequencial=1)
 
     ciclo_gravado, versao = contexto["ciclos"].carregar()
     assert ciclo_gravado.reservadas == frozenset({"f1"})
@@ -63,6 +65,7 @@ def test_efetivar_grava_ciclo_e_pedido(contexto: Any) -> None:
     gravado = contexto["pedidos"].obter("extra#42")
     assert gravado is not None
     assert gravado.frase_reservada == "f1"
+    assert gravado.partes_reservadas == ("texto",)
     assert gravado.estado is EstadoDoPedido.RESERVADO
 
 

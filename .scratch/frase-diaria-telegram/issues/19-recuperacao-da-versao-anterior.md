@@ -24,7 +24,7 @@ baixado e republicado sem reconstruir → diagnóstico pós-recuperação aprova
 → implantação de recuperação registrada `success` → agendamento nunca
 tocado (a recuperação funcionou). Detalhes completos em `docs/19`.
 
-- [x] Artefatos imutáveis, configuração e manifesto suficientes para restaurar uma publicação sem reconstruir dependências ficam preservados. *(retenção do artefato: 1 → 14 dias)*
+- [x] Artefatos imutáveis, configuração e manifesto suficientes para restaurar uma publicação sem reconstruir dependências ficam preservados. *(cache do Actions: 14 dias; arquivo durável no S3)*
 - [x] Dois marcos são mantidos e consultáveis: a publicação saudável anterior à tentativa e a versão estável aceita em `main`. *(API de Deployments do ticket 18 + HEAD de `main`; sem manifesto novo)*
 - [x] Falha de deploy recupera a publicação saudável anterior à tentativa, considerando também o rollback nativo da infraestrutura (AC24). *(mesmo caminho de código da falha de diagnóstico abaixo; caminho "desabilitar" exercitado ao vivo na 1ª rodada)*
 - [x] Falha do diagnóstico pós-publicação recupera a publicação saudável anterior à tentativa (AC24). *(exercitado de ponta a ponta em duas rodadas reais: achou e corrigiu um bug de always() na 1ª, provou o redeploy completo — localizar, baixar, checksum, sam deploy, verificar — na 2ª)*

@@ -41,17 +41,25 @@ VERSAO=$(git rev-parse HEAD) make publicar-app   # a cada versão
 O SAM roda via `uvx --from aws-sam-cli sam`: o instalado na máquina (1.125.0) não
 conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 
-`GET /health`: https://kamvdtjaw0.execute-api.us-east-1.amazonaws.com/health
+`GET /health`: https://<API_ID>.execute-api.us-east-1.amazonaws.com/health
 `POST /telegram/webhook`: mesma origem, registrado no Telegram.
 
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
-`telegram-chat-id` (**672024065** — a conversa da usuária; o id do bot é
-8340090374 e não serve), `webhook-secret`, `notion-token` (integração interna,
-capacidade só de leitura de conteúdo; leitura de comentários é opcional e não
-está habilitada) e `notion-pagina-id` (aceita o id puro ou a URL completa da
+`telegram-chat-ids` (v2, `.scratch/v2-telegram-bot.md` — lista de destinatários
+autorizados separados por vírgula; inclui pelo menos `<TELEGRAM_CHAT_ID_PRINCIPAL>`, a conversa
+da usuária; o id do bot é <TELEGRAM_BOT_ID> e não serve), `webhook-secret`,
+`notion-token` (integração interna, capacidade só de leitura de conteúdo;
+leitura de comentários é opcional e não está habilitada) e `notion-pagina-id`
+(aceita o id puro ou a URL completa da
 página, com o título como prefixo — o cliente normaliza).
+
+**Migração concluída no código (v2, ticket 25):** tanto o webhook quanto o
+disparo agendado da diária já leem só `telegram-chat-ids`. O parâmetro antigo
+`telegram-chat-id` (singular) não é mais lido por nada no código — ele só
+continua existindo no SSM até o ticket 27 confirmar a migração em produção e
+autorizar removê-lo; até lá, não é necessário para a operação.
 
 Manuseio de segredos, cache por container e depuração do webhook: `rules.md`.
 
@@ -112,7 +120,7 @@ Estas regras são a razão de a spec existir; violá-las quebra o produto de for
 - Um reconciliador periódico (proposta: 5 min) recupera pendentes e pode criar a diária ausente dentro da janela; a chave diária torna as duas entradas idempotentes.
 
 **Idempotência**
-- Diária = conversa autorizada + data local · Extra = bot + `update_id` · Parte = pedido + índice · Tentativa = pedido + sequencial.
+- Diária = data local (v2: um único pedido para todo o conjunto de destinatários, não mais por conversa) · Extra = bot + `update_id` · Parte = pedido + destinatário + índice (v2) · Tentativa = pedido + sequencial.
 - Reserva de pedido e de frase usam escritas condicionais e transações; ciclo e sequência de envio protegidos por **lease com prazo + token de versão**, para que um executor antigo não confirme nem avance uma reserva já transferida.
 - Banco e chamada ao Telegram não estão na mesma transação. A spec **não promete** entrega exatamente uma vez sob falha ambígua: registrar intenção por parte antes do envio e, em resultado ambíguo, marcar *incerto* e **suspender reenvio automático** dessa parte.
 - Estados terminais não são reabertos por evento duplicado.
@@ -164,9 +172,9 @@ Cada mudança deve mapear para um AC da seção 5 da spec. O aceite AWS (entrega
 Já fechadas — implemente conforme descrito, não reabra:
 - **Janela dos extras:** `/frase` antes das 12:00 pode retentar até as 12:00; a partir das 12:00, tentativa única imediata e, falhando, encerra com diagnóstico. Sem fila para o dia seguinte.
 - **Entrega incerta:** tratamento conservador — marcar a parte como incerta e suspender o reenvio automático, aceitando o risco de uma mensagem perdida em troca de não duplicar.
-- **GitHub:** conta `soamazyng`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
+- **GitHub:** conta `<GITHUB_OWNER>`, plano **Pro** (3.000 min de Actions/mês, branch protection vale em repo privado — o AC29 é atendível).
 - **Reconciliador de publicações (GitHub Actions):** roda **de hora em hora**, não de 5 em 5 minutos. A 5 min seriam 8.640 min/mês contra os 3.000 do Pro — ~US$34/mês. Não confundir com o reconciliador de *pedidos* (Lambda, a cada 5 min), que é praticamente grátis.
-- **AWS:** conta **712790115760**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
+- **AWS:** conta **<AWS_ACCOUNT_ID>**, região **us-east-1**, perfil local `perfil-padrao`, identidade `user/aws-developer-group` (permissões de bootstrap verificadas). A conta só tem **Always Free** — a franquia de 12 meses já expirou, o que não muda nada porque o bot cabe no Always Free.
 - **Segredos:** usar **SSM Parameter Store** (`SecureString`), que é gratuito. Não usar Secrets Manager: custaria ~US$0,40/segredo/mês sem vantagem aqui.
 - **Sem VPC nem NAT.** Um NAT Gateway custaria ~US$32/mês sozinho e nenhum requisito exige rede privada.
 

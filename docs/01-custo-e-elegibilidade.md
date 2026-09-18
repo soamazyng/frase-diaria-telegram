@@ -12,16 +12,16 @@
 
 | Item | Valor |
 |---|---|
-| Conta AWS | **712790115760** ✓ |
+| Conta AWS | **<AWS_ACCOUNT_ID>** ✓ |
 | Região | **us-east-1** ✓ |
-| Identidade disponível | `arn:aws:iam::712790115760:user/aws-developer-group` |
+| Identidade disponível | `arn:aws:iam::<AWS_ACCOUNT_ID>:user/aws-developer-group` |
 | Identidade para bootstrap | a acima, já com permissões suficientes ✓ |
 | Perfil local | `perfil-padrao` (no `~/.aws/config`) |
-| Conta GitHub | `soamazyng` (pessoal, criada em 2010-10-17) |
-| Repositório | `soamazyng/frase-diaria-telegram` — privado ✓ |
+| Conta GitHub | `<GITHUB_OWNER>` (pessoal, criada em 2010-10-17) |
+| Repositório | `<GITHUB_OWNER>/frase-diaria-telegram` — privado ✓ |
 | Plano do GitHub | **Pro** ✓ (já assinado, US$4/mês, anterior ao projeto) |
 
-A conta 712790115760 é a mesma do perfil `bedrock-curso`, originalmente de curso.
+A conta <AWS_ACCOUNT_ID> é a mesma do perfil `bedrock-curso`, originalmente de curso.
 A escolha foi da usuária, ciente de que o billing fica misturado com material de
 estudo.
 
@@ -53,6 +53,7 @@ O reconciliador de pedidos domina o volume: sozinho é 99% das invocações.
 | DynamoDB (requisições) | on-demand não tem franquia | ~100k req | — | ~US$0,01 |
 | API Gateway HTTP API | esgotada (conta > 12 meses) | ~100 req | — | ~US$0,0001 |
 | S3 (cache de mídia) | 5 GB / 20k GET / 2k PUT | poucos MB | <0,1% | ~R$0 |
+| S3 (artefatos de recuperação) | US$0,023/GB-mês, sem prazo de expiração | ~3,6 GB após 1 ano | — | ~US$0,09/mês no mês 12 |
 | CloudWatch Logs | 5 GB de ingestão | baixo, retenção 14 dias | baixo | ~R$0 |
 | Tráfego de saída | 100 GB/mês | desprezível | <0,1% | R$0 |
 | SSM Parameter Store (Standard) | sem cobrança por parâmetro | 4 parâmetros | — | R$0 |
@@ -61,6 +62,18 @@ O reconciliador de pedidos domina o volume: sozinho é 99% das invocações.
 não depende da idade da conta. Os serviços que dependem de franquia de 12 meses
 — API Gateway e S3 — custam centavos mesmo **sem** franquia nenhuma, porque o
 volume é irrisório.
+
+**Estimativa do arquivo durável, atualizada em 2026-09-16.** O cálculo usa
+10 MB compactados por publicação e 30 pushes publicados por mês: crescimento
+de 0,3 GB/mês, 3,6 GB ao fim do primeiro ano e aproximadamente US$0,083/mês
+naquele ponto. Sem expiração deliberada, o custo cresce linearmente: no mesmo
+ritmo, cerca de 18 GB e US$0,41/mês após cinco anos. PUT/GET são dezenas por
+mês e permanecem desprezíveis. A referência de preço é o S3 Standard em
+US East (N. Virginia), US$0,023 por GB-mês; conferir a
+[página oficial de preços do S3](https://aws.amazon.com/s3/pricing/) antes de
+alterar retenção ou volume. Versionamento protege contra sobrescrita e o
+workflow usa criação condicional por SHA, então versões não atuais só aparecem
+em uma intervenção fora do fluxo normal.
 
 ### O Free Tier da AWS mudou
 
@@ -184,7 +197,7 @@ organizacional.
 ## 6. Pendências que dependem da usuária
 
 - [x] Rotacionar a access key exposta em 2026-09-07 — feito pela usuária.
-- [x] Definir a conta AWS: **712790115760**.
+- [x] Definir a conta AWS: **<AWS_ACCOUNT_ID>**.
 - [x] Corrigir a seção do perfil no `~/.aws/config` para `[profile perfil-padrao]`.
 - [x] Confirmar a região: **us-east-1**.
 - [x] B1 — `docs/aws-policy-bootstrap.json` anexado ao usuário; permissões

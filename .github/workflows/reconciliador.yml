@@ -3,8 +3,8 @@ name: Reconciliador de publicações
 # Roda de hora em hora (decisão da usuária, ticket 20 — 5 em 5 minutos
 # custaria ~US$53/mês em minutos excedentes do plano Free; de hora em hora
 # cabe nos 2.000 min/mês). GitHub só dispara `schedule` a partir do branch
-# padrão (main) — por isso o papel assumido aqui (frase-diaria-infraestrutura)
-# tem a trust policy escopada a `ref:refs/heads/main`, não `develop`.
+# padrão (main) — por isso o papel de reconciliação exige o environment de
+# produção e o claim `ref:refs/heads/main`.
 #
 # Cobre o que o job "publicar" (tickets 18/19) não cobre porque ninguém
 # está lá para reagir: o runner morreu no meio de uma publicação (a
@@ -23,6 +23,7 @@ jobs:
   reconciliar:
     name: Reconciliar publicação
     runs-on: ubuntu-latest
+    environment: producao
     concurrency:
       # A MESMA exclusão mútua do job "publicar" (checklist do ticket 20:
       # "adquire a mesma exclusão mútua de produção antes de agir"). Grupo
@@ -41,6 +42,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       STACK_APLICACAO: frase-diaria-app
+      BUCKET_ARTEFATOS: ${{ vars.AWS_BUCKET_ARTEFATOS }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,11 +55,12 @@ jobs:
       - name: Configurar credenciais AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          # Mesmo ARN de conta, papel diferente do de publicação — trust
-          # policy escopada a ref:refs/heads/main (infra/bootstrap.yaml).
-          role-to-assume: arn:aws:iam::712790115760:role/frase-diaria-infraestrutura
+          # Papel específico de reconciliação; ARN fora do código versionado.
+          # A trust policy exige o environment e o ref exato de main.
+          role-to-assume: ${{ vars.AWS_ROLE_RECONCILIACAO_ARN }}
           aws-region: us-east-1
           role-session-name: github-${{ github.run_id }}
+          mask-aws-account-id: true
 
       - name: Reconciliar implantações travadas "em andamento"
         # "Uma publicação registrada como 'em andamento' há tempo demais é
@@ -144,48 +147,42 @@ jobs:
             exit 0
           fi
 
+          checksumEstavel=""
+          for id in $(gh api "repos/$GH_REPO/deployments?environment=producao&sha=$shaEstavel&per_page=20" --jq '.[].id'); do
+            estado="$(gh api "repos/$GH_REPO/deployments/$id/statuses?per_page=1" --jq '.[0].state // empty')"
+            if [ "$estado" != "success" ]; then
+              continue
+            fi
+            descricao="$(gh api "repos/$GH_REPO/deployments/$id" --jq '.description // empty')"
+            checksumEstavel="$(echo "$descricao" \
+              | sed -n 's/^checksum sha256:\([0-9a-f]\{64\}\)$/\1/p')"
+            if [ -n "$checksumEstavel" ]; then
+              break
+            fi
+          done
+
           echo "Versão ativa ($versaoAtiva) diverge da estável ($shaEstavel) sem PR aberto — reconciliando."
           echo "reconciliar=sim" >> "$GITHUB_OUTPUT"
           echo "sha-estavel=$shaEstavel" >> "$GITHUB_OUTPUT"
+          echo "checksum-estavel=$checksumEstavel" >> "$GITHUB_OUTPUT"
+
+      - name: Obter artefato da versão estável
+        if: steps.avaliar.outputs.reconciliar == 'sim'
+        id: obter-estavel
+        uses: ./.github/actions/obter-artefato
+        with:
+          sha: ${{ steps.avaliar.outputs.sha-estavel }}
+          checksum: ${{ steps.avaliar.outputs.checksum-estavel }}
 
       - name: Reconciliar para a versão estável
-        if: steps.avaliar.outputs.reconciliar == 'sim'
+        if: steps.obter-estavel.outputs.disponivel == 'sim'
         id: reconciliar
         env:
           SHA_ESTAVEL: ${{ steps.avaliar.outputs.sha-estavel }}
+          CHECKSUM_ESTAVEL: ${{ steps.avaliar.outputs.checksum-estavel }}
         run: |
           set -euo pipefail
-
-          # Mesma técnica do passo "Recuperar publicação saudável anterior"
-          # (ticket 19, .github/workflows/pr-develop-main.yml) — duplicada
-          # aqui, não extraída para uma composite action compartilhada:
-          # aquele pipeline já está exercitado ao vivo várias vezes nesta
-          # sessão, e refatorá-lo para compartilhar código arriscaria
-          # reintroduzir uma regressão sem tempo de testar de novo com o
-          # mesmo rigor. Trade-off deliberado (documentado em docs/20),
-          # análogo à duplicação das policies IAM em infra/bootstrap.yaml.
-          idArtefato="$(gh api "repos/$GH_REPO/actions/artifacts?name=artefato-$SHA_ESTAVEL&per_page=1" --jq '.artifacts[0].id // empty')"
-          if [ -z "$idArtefato" ]; then
-            echo "::error::artefato de $SHA_ESTAVEL não está mais disponível (retenção expirada); reconciliação automática impossível."
-            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          rm -rf .aws-sam/build
-          mkdir -p .aws-sam/build
-          gh api "repos/$GH_REPO/actions/artifacts/$idArtefato/zip" > /tmp/artefato-reconciliacao.zip
-          unzip -q /tmp/artefato-reconciliacao.zip -d .aws-sam/build
-
-          esperado="$(cat .aws-sam/build/CHECKSUM.txt)"
-          obtido="$(find .aws-sam/build -type f ! -name CHECKSUM.txt -print0 \
-            | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
-          if [ "$esperado" != "$obtido" ]; then
-            echo "::error::checksum do artefato de reconciliação ($SHA_ESTAVEL) não confere"
-            echo "sucesso=nao" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          corpo="$(jq -n --arg ref "$SHA_ESTAVEL" --arg descricao "reconciliação periódica: PR fechado sem merge ou publicação nunca sincronizada" \
+          corpo="$(jq -n --arg ref "$SHA_ESTAVEL" --arg descricao "checksum sha256:$CHECKSUM_ESTAVEL" \
             '{ref: $ref, environment: "producao", auto_merge: false, required_contexts: [], description: $descricao}')"
           idImplantacao="$(echo "$corpo" | gh api --method POST "repos/$GH_REPO/deployments" --input - --jq .id)"
           gh api --method POST "repos/$GH_REPO/deployments/$idImplantacao/statuses" \

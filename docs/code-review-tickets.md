@@ -21,11 +21,11 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | Ticket | Estado do trabalho | Evidência histórica de code-review | Auditoria atual |
 |---|---|---|---|
 | 01 | Concluído administrativamente | Não localizada; entrega documental e policy de bootstrap, sem implementação de código a certificar | Não auditado como diff de código |
-| 02 | Concluído | Declarada na mensagem completa de `5335d4c`; não comprova re-review final pós-correção | Spec: OK; Standards: achado sob regra nova |
+| 02 | Concluído | Declarada na mensagem completa de `<COMMIT_SHA>`; não comprova re-review final pós-correção | Spec: OK; Standards: achado sob regra nova |
 | 03 | Concluído | Não localizada nas mensagens completas do intervalo | Achados em Standards e Spec |
 | 04 | Concluído | Não localizada nas mensagens completas do intervalo | Achados em Standards e Spec |
-| 05 | Concluído | Declarada na mensagem completa de `b0c6c19`; não comprova re-review final pós-correção | Achados em Standards e Spec |
-| 06 | Concluído | Declarada na mensagem completa de `fe1fad9`; `08f8dc6` registra exercício AWS, não um re-review final | Spec: OK no escopo; Standards: achados, incluindo débito conhecido |
+| 05 | Concluído | Declarada na mensagem completa de `<COMMIT_SHA>`; não comprova re-review final pós-correção | Achados em Standards e Spec |
+| 06 | Concluído | Declarada na mensagem completa de `<COMMIT_SHA>`; `<COMMIT_SHA>` registra exercício AWS, não um re-review final | Spec: OK no escopo; Standards: achados, incluindo débito conhecido |
 | 07 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 08 | Em implementação no diretório de trabalho | Review executado no diretório de trabalho do ticket | Spec: OK; Standards: sem achados de alta confiança |
 | 09 | Concluído | Review executado no diretório de trabalho do ticket | Spec: OK após correção; Standards: 2 achados, ambos corrigidos |
@@ -42,6 +42,38 @@ identificadores operacionais aparecem apenas como categorias e localizações.
 | 20 | Pendente | Não aplicável ainda | Pendente |
 | 21 | Pendente | Não aplicável ainda | Pendente |
 | 22 | Pendente | Não aplicável ainda | Pendente |
+| 26 | Concluído em 2026-09-16 | Review em dois agentes sobre os arquivos da task, base `<COMMIT_SHA>`, seguido de re-review após correção | Standards: OK; Spec: OK; 433 testes e gate completo aprovados |
+| 28 | Concluído em 2026-09-16 | Review em dois agentes sobre o diff staged, seguido de re-review após correção | Standards: OK; Spec: OK; 489 testes e gate completo aprovados |
+| 29 | Concluído em 2026-09-16 | Review em dois agentes sobre o diff staged, seguido de re-review após correção | Standards: OK; Spec: OK; 492 testes e gate completo aprovados |
+
+### Atualização do ticket 26 — 2026-09-16
+
+O review da conclusão encontrou, nos dois eixos, uma incerteza persistida que podia
+ser perdida no encerramento por falha permanente ou prazo, liberando a frase para
+novo sorteio. Dois casos de regressão falharam antes da correção e passaram depois:
+o encerramento mantém `INCERTO` e consumo com ressalva. Re-review independente dos
+trechos corrigidos: **Standards OK; Spec OK**, sem achados pendentes. O gate final
+passou com 433 testes, Ruff, formatação e mypy. Detalhes, limitações de histórico e
+aceite real pendente em `docs/26-status-por-destinatario.md`.
+
+### Atualização do ticket 28 — 2026-09-16
+
+O review inicial da extração encontrou aleatoriedade global no backoff, um flag redundante
+na agregação e um resultado tipado que aceitava espera sem data. As correções injetaram a
+dispersão, tornaram o teste determinístico, eliminaram o flag e validaram a invariante no
+resultado. O re-review independente concluiu **Standards: OK** e **Spec: OK**. O gate final
+passou com 489 testes, Ruff, formatação e mypy. Os detalhes estão em
+`docs/28-extrair-entrega-por-destinatario.md`.
+
+### Atualização do ticket 29 — 2026-09-16
+
+O review inicial da extração encontrou estado duplicado entre o contexto e o resultado da
+entrega, um teste que não repetia o encerramento prometido como idempotente e um despacho de
+enum sem garantia de exaustividade. As correções deixaram o pedido somente no resultado da
+entrega, repetiram o encerramento contra uma versão obsoleta do ciclo e adicionaram a
+verificação estática de todos os desfechos. O re-review independente concluiu **Standards:
+OK** e **Spec: OK**. O gate final passou com 492 testes, Ruff, formatação e mypy. Os detalhes
+estão em `docs/29-encapsular-encerramento-e-ciclo.md`.
 
 O ticket 01 verificou condições de conta, custo e permissões e entregou documentação e
 `docs/aws-policy-bootstrap.json`. Isso não equivale a uma implementação de código nem a
@@ -53,18 +85,18 @@ existe.
 As mensagens completas dos commits, e não apenas os títulos, sustentam as classificações
 abaixo:
 
-- **Ticket 02 — `5335d4c`:** declara “correções vindas do code-review” e enumera quatro
+- **Ticket 02 — `<COMMIT_SHA>`:** declara “correções vindas do code-review” e enumera quatro
   correções. Como a declaração e as correções pertencem ao mesmo commit, o review final
   depois da última alteração não está comprovado.
-- **Ticket 03 — `80d15b4`:** descreve implementação e verificações AWS, sem declarar
+- **Ticket 03 — `<COMMIT_SHA>`:** descreve implementação e verificações AWS, sem declarar
   code-review.
-- **Ticket 04 — `31cf1a8` e `bf8a8bd`:** descrevem implementação, correção de configuração
+- **Ticket 04 — `<COMMIT_SHA>` e `<COMMIT_SHA>`:** descrevem implementação, correção de configuração
   e exercício AWS, sem declarar code-review.
-- **Ticket 05 — `b0c6c19`:** declara “correções vindas do code-review”, enumera sete
+- **Ticket 05 — `<COMMIT_SHA>`:** declara “correções vindas do code-review”, enumera sete
   correções e encaminha três achados aos tickets 08, 09 e 14. Não há evidência separada
   de re-review depois dessas correções.
-- **Ticket 06 — `fe1fad9`:** declara “correções vindas do code-review” e enumera cinco
-  correções. O commit posterior `08f8dc6` registra o exercício AWS e uma limitação
+- **Ticket 06 — `<COMMIT_SHA>`:** declara “correções vindas do code-review” e enumera cinco
+  correções. O commit posterior `<COMMIT_SHA>` registra o exercício AWS e uma limitação
   encaminhada ao ticket 14, mas não declara novo code-review.
 
 Os snapshots históricos foram exercitados com o ambiente virtual atual, sem reconstruir
@@ -90,8 +122,8 @@ Legenda temporal:
 - **Baseline atual:** smell heurístico do skill atual; é julgamento, não violação dura.
 
 Salvo indicação contrária, caminhos e linhas desta seção pertencem ao snapshot final de
-cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` e 06 em
-`08f8dc6`. Eles não devem ser interpretados como linhas do diretório de trabalho atual.
+cada ticket: 02 em `<COMMIT_SHA>`, 03 em `<COMMIT_SHA>`, 04 em `<COMMIT_SHA>`, 05 em `<COMMIT_SHA>` e 06 em
+`<COMMIT_SHA>`. Eles não devem ser interpretados como linhas do diretório de trabalho atual.
 
 ### Ticket 02
 
@@ -105,7 +137,7 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
 
 ### Ticket 03
 
-- **Vigente — segurança/alta:** no snapshot `80d15b4`,
+- **Vigente — segurança/alta:** no snapshot `<COMMIT_SHA>`,
   `infra/aplicacao.yaml:76-88` concede à Lambda que só atendia `/health` ações DynamoDB
   de leitura, escrita, exclusão, consulta e transação. Isso viola a spec 4.9 e o próprio
   ticket 03, que exigem permissões específicas por função; o comentário do YAML também
@@ -118,7 +150,7 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
 
 ### Ticket 04
 
-- **Vigente — segurança/alta:** no snapshot `bf8a8bd`,
+- **Vigente — segurança/alta:** no snapshot `<COMMIT_SHA>`,
   `src/frase_diaria/aplicacao/receber_comando.py:55-61` interpreta e extrai a conversa
   antes de validar o segredo. Isso viola a ordem explícita segredo → tipo → `chat_id` do
   ticket 04. O teste e a documentação afirmam essa ordem, mas não a demonstram.
@@ -146,7 +178,7 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
 
 ### Ticket 05
 
-- **Vigente em parte; ampliada pela regra nova — segurança/alta:** no snapshot `b0c6c19`,
+- **Vigente em parte; ampliada pela regra nova — segurança/alta:** no snapshot `<COMMIT_SHA>`,
   `aplicacao/processar_pedido.py:54,116-121` e
   `infraestrutura/worker_handler.py:28-30` registram identidades persistentes e
   `repr(erro)`. A spec e o `rules.md` já exigiam erro sanitizado; a classificação
@@ -171,7 +203,7 @@ cada ticket: 02 em `5335d4c`, 03 em `80d15b4`, 04 em `bf8a8bd`, 05 em `b0c6c19` 
 
 ### Ticket 06
 
-- **Vigente — concorrência/alta; conhecido e diferido:** no snapshot `08f8dc6`,
+- **Vigente — concorrência/alta; conhecido e diferido:** no snapshot `<COMMIT_SHA>`,
   `persistencia/ciclos.py:56` grava o ciclo inteiro sem condição, e
   `persistencia/reserva.py:26-43` só condiciona a existência do pedido, sem versão do
   ciclo. Dois workers podem sobrescrever reserva ou consumo. Isso viola a spec 4.6/AC03,
@@ -276,7 +308,7 @@ incorretamente.
   (`.scratch/frase-diaria-telegram/issues/03-publicacao-manual-sam-health-na-aws.md:9`;
   spec 4.9). A única Lambda só
   executava `/health`, mas recebeu todas as operações DynamoDB descritas em
-  `infra/aplicacao.yaml:76-88` no snapshot `80d15b4`.
+  `infra/aplicacao.yaml:76-88` no snapshot `<COMMIT_SHA>`.
 - **Ausente/parcial:** nenhum outro.
 - **Scope creep:** nenhum outro.
 
@@ -284,7 +316,7 @@ incorretamente.
 
 - **Implementação incorreta:** atualizações irrelevantes retornam antes de qualquer
   autenticação em `src/frase_diaria/aplicacao/receber_comando.py:55-65` no snapshot
-  `bf8a8bd`. Isso
+  `<COMMIT_SHA>`. Isso
   contradiz “atualizações irrelevantes já validadas” (ticket 04, linha 16; spec 4.7) e a
   ordem exigida no ticket 04, linha 9.
 - **Requisito parcial:** se o envio da ajuda falha depois de registrar o update, a

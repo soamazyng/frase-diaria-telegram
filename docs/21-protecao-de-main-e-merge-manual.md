@@ -82,12 +82,12 @@ essas buscas.
   terceiros, permissões mínimas por job (`deployments: write`, `issues:
   write`, sem `contents`), nenhum `${{ }}` interpolado em `run:`.
 - **Fluxo completo exercitado ao vivo, PR #6:** mergeada com merge commit
-  (`618b94f`), incorporando a ponta de `develop` `0dd2bdc`. O merge passou
+  (`<COMMIT_SHA>`), incorporando a ponta de `develop` `<COMMIT_SHA>`. O merge passou
   pela proteção normalmente (os 5 checks já estavam verdes) e disparou
   `verificar-merge.yml`. O passo "Localizar a última publicação
-  bem-sucedida" achou `0dd2bdc` como implantação `success` mais recente —
+  bem-sucedida" achou `<COMMIT_SHA>` como implantação `success` mais recente —
   igual ao SHA incorporado — e "Marcar a versão como estável" criou o
-  deployment `6339699993` no ambiente `main-estavel` com `state=success`.
+  deployment `<DEPLOYMENT_ID>` no ambiente `main-estavel` com `state=success`.
   "Registrar divergência" ficou `skipped` (o caminho certo, já que os SHAs
   coincidiam) e nenhuma issue nova foi criada.
 

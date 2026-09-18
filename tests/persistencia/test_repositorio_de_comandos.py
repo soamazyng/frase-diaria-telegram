@@ -21,7 +21,7 @@ INSTANTE = __import__("datetime").datetime(2026, 9, 7, 12, 0, tzinfo=__import__(
 def _atualizacao(update_id: int = 1, comando: Comando = Comando.FRASE) -> Atualizacao:
     return Atualizacao(
         update_id=update_id,
-        conversa=Conversa(chat_id=8340090374, tipo="private"),
+        conversa=Conversa(chat_id=111111, tipo="private"),
         comando=comando,
     )
 
@@ -54,6 +54,26 @@ def test_o_mesmo_update_id_nao_registra_duas_vezes(repositorio) -> None:  # type
     assert repositorio.registrar(_atualizacao(update_id=7), INSTANTE) is False
 
 
+def test_acao_e_reivindicada_uma_unica_vez_e_concluida(repositorio) -> None:  # type: ignore[no-untyped-def]
+    repositorio.registrar(_atualizacao(update_id=7), INSTANTE)
+
+    assert repositorio.reivindicar_acao(7) is True
+    assert repositorio.reivindicar_acao(7) is False
+
+    repositorio.marcar_acao_concluida(7)
+
+    assert repositorio.reivindicar_acao(7) is False
+
+
+def test_acao_definitivamente_recusada_pode_ser_reivindicada_de_novo(repositorio) -> None:  # type: ignore[no-untyped-def]
+    repositorio.registrar(_atualizacao(update_id=7), INSTANTE)
+    assert repositorio.reivindicar_acao(7) is True
+
+    repositorio.liberar_acao(7)
+
+    assert repositorio.reivindicar_acao(7) is True
+
+
 def test_update_ids_diferentes_sao_registros_distintos(repositorio) -> None:  # type: ignore[no-untyped-def]
     assert repositorio.registrar(_atualizacao(update_id=7), INSTANTE) is True
     assert repositorio.registrar(_atualizacao(update_id=8), INSTANTE) is True
@@ -65,7 +85,7 @@ def test_o_registro_guarda_o_que_aconteceu(repositorio) -> None:  # type: ignore
     item = repositorio.tabela.get_item(Key={"pk": "comando#7", "sk": "registro"})["Item"]
 
     assert item["comando"] == "/status"
-    assert item["chat_id"] == 8340090374
+    assert item["chat_id"] == 111111
     assert item["recebido_em"] == "2026-09-07T12:00:00+00:00"
 
 

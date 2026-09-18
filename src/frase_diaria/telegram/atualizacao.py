@@ -1,17 +1,10 @@
-from dataclasses import dataclass
 from typing import Any
 
+from frase_diaria.dominio.atualizacao import Atualizacao
 from frase_diaria.dominio.autorizacao import Conversa
 from frase_diaria.dominio.comando import Comando
 
-
-@dataclass(frozen=True)
-class Atualizacao:
-    """Um Update do Telegram reduzido ao que este bot precisa."""
-
-    update_id: int
-    conversa: Conversa
-    comando: Comando
+__all__ = ["Atualizacao", "interpretar"]
 
 
 def interpretar(corpo: dict[str, Any]) -> Atualizacao | None:

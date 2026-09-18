@@ -1,7 +1,5 @@
 # frase-diaria-telegram
 
-[![CI/CD develop -> main](https://github.com/soamazyng/frase-diaria-telegram/actions/workflows/pr-develop-main.yml/badge.svg?branch=develop)](https://github.com/soamazyng/frase-diaria-telegram/actions/workflows/pr-develop-main.yml)
-[![Reconciliador de publicações](https://github.com/soamazyng/frase-diaria-telegram/actions/workflows/reconciliador.yml/badge.svg)](https://github.com/soamazyng/frase-diaria-telegram/actions/workflows/reconciliador.yml)
 ![Python](https://img.shields.io/badge/python-3.13-blue?logo=python&logoColor=white)
 ![AWS SAM](https://img.shields.io/badge/AWS-SAM%20%7C%20Lambda%20%7C%20DynamoDB-FF9900?logo=amazonaws&logoColor=white)
 ![Custo recorrente](https://img.shields.io/badge/custo%20recorrente-R%240-brightgreen)

@@ -64,16 +64,19 @@ Resources:
             # pedidos. Não lê, não apaga, não transaciona — quem faz isso é o
             # worker. Permissão que a função não usa é superfície de ataque à toa.
             - Effect: Allow
-              Action: dynamodb:PutItem
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
               Resource:
                 Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-            - &leituraDosSegredos
+            - &segredosDoHttp
               Effect: Allow
-              Action:
-                - ssm:GetParametersByPath
-                - ssm:GetParameter
-                - ssm:GetParameters
-              Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/*"
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-token"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-chat-ids"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-legado-id"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/webhook-secret"
             # SecureString usa a chave gerenciada do SSM; sem isto a decifragem falha.
             - &decifrarSegredos
               Effect: Allow
@@ -134,7 +137,13 @@ Resources:
                   - "${Arn}/index/*"
                   - Arn:
                       Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-            - *leituraDosSegredos
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-token"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-legado-id"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/notion-token"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/notion-pagina-id"
             - *decifrarSegredos
 
   # Dispara a diária às 08:00 America/Sao_Paulo (spec, 4.5; AC01). O
@@ -158,7 +167,13 @@ Resources:
               Action: dynamodb:PutItem
               Resource:
                 Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-            - *leituraDosSegredos
+            - &segredosDaDiaria
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-token"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-chat-ids"
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Prefixo}/telegram-bot-legado-id"
             - *decifrarSegredos
             - *acordarWorker
       Events:
@@ -207,7 +222,7 @@ Resources:
                   - "${Arn}/index/*"
                   - Arn:
                       Fn::ImportValue: !Sub "${Prefixo}-TabelaArn"
-            - *leituraDosSegredos
+            - *segredosDaDiaria
             - *decifrarSegredos
             - *acordarWorker
       Events:

@@ -1,12 +1,18 @@
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
 from frase_diaria.aplicacao.diagnostico import erro_sanitizado
-from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
+from frase_diaria.aplicacao.portas import (
+    ChaveDeParte,
+    ConfirmacaoDeParte,
+    ConflitoDeConcorrencia,
+    IncertezaDeParte,
+    IntencaoDeParte,
+)
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.dominio.tempo import em_utc
 
@@ -18,7 +24,9 @@ class RepositorioDePedidosDynamo:
     Um pedido ocupa vários itens sob a mesma partição:
 
     - `sk = "pedido"` — o estado corrente
-    - `sk = "parte#NNN"` — uma parte confirmada, com o texto enviado
+    - `sk = "parte#<destinatario>#NNN"` — uma parte confirmada, com o texto
+      enviado (v2: por destinatário, já que a mesma parte pode ter desfechos
+      diferentes por pessoa)
     - `sk = "tentativa#<sequencial>"` — o histórico de execuções
 
     Manter partes e tentativas fora do item do pedido é o que impede um item de
@@ -53,12 +61,15 @@ class RepositorioDePedidosDynamo:
                     "identidade": self._identidade_legada(pedido.identidade) or pedido.identidade,
                     "identidade_atual": pedido.identidade,
                     "origem": pedido.origem.value,
-                    "chat_id": pedido.chat_id,
+                    "destinatarios": list(pedido.destinatarios),
                     "estado": pedido.estado_legado,
                     "estado_atual": pedido.estado.value,
                     "motivo_do_estado": pedido.motivo_do_estado,
                     "criado_em": em_utc(instante).isoformat(timespec="microseconds"),
                     "tentativa_unica": pedido.tentativa_unica,
+                    "total_de_partes": pedido.total_de_partes,
+                    "partes_reservadas": list(pedido.partes_reservadas or ()),
+                    "destinatarios_com_falha": list(pedido.destinatarios_com_falha),
                     **(
                         {}
                         if pedido.estado.terminal
@@ -88,10 +99,18 @@ class RepositorioDePedidosDynamo:
         ).get("Item")
         if item is None:
             return None
+        destinatarios_gravados = item.get("destinatarios")
+        destinatarios = (
+            tuple(int(d) for d in destinatarios_gravados)
+            if destinatarios_gravados is not None
+            # Formato anterior à v2: um único destinatário, gravado como
+            # `chat_id` — mesmo padrão de compatibilidade que `bot_legado`.
+            else (int(item["chat_id"]),)
+        )
         pedido = Pedido(
             identidade=str(item.get("identidade_atual", item["identidade"])),
             origem=Origem(item["origem"]),
-            chat_id=int(item["chat_id"]),
+            destinatarios=destinatarios,
             estado=EstadoDoPedido(item.get("estado_atual", item["estado"])),
             frase_reservada=item.get("frase_reservada") or None,
             motivo_do_estado=str(item.get("motivo_do_estado") or "estado legado"),
@@ -102,6 +121,15 @@ class RepositorioDePedidosDynamo:
             ),
             prazo=(em_utc(datetime.fromisoformat(item["prazo"])) if item.get("prazo") else None),
             tentativa_unica=bool(item.get("tentativa_unica", False)),
+            total_de_partes=(
+                int(item["total_de_partes"]) if item.get("total_de_partes") is not None else None
+            ),
+            partes_reservadas=(
+                tuple(str(parte) for parte in item["partes_reservadas"])
+                if item.get("partes_reservadas")
+                else None
+            ),
+            destinatarios_com_falha=tuple(int(d) for d in item.get("destinatarios_com_falha", [])),
         )
         # Uma versão antiga pode avançar o estado sem conhecer estado_atual.
         if pedido.estado_legado != item["estado"]:
@@ -127,12 +155,16 @@ class RepositorioDePedidosDynamo:
             ":i": self._identidade_legada(pedido.identidade) or pedido.identidade,
             ":identidade_atual": pedido.identidade,
             ":o": pedido.origem.value,
-            ":c": pedido.chat_id,
+            ":d": list(pedido.destinatarios),
+            ":total": pedido.total_de_partes,
+            ":partes": list(pedido.partes_reservadas or ()),
+            ":falhos": list(pedido.destinatarios_com_falha),
         }
         expressao = (
             "SET estado = :e, estado_atual = :atual, motivo_do_estado = :m, frase_reservada = :f, "
             "identidade_atual = :identidade_atual, "
-            "identidade = :i, origem = :o, chat_id = :c"
+            "identidade = :i, origem = :o, destinatarios = :d, total_de_partes = :total"
+            ", partes_reservadas = :partes, destinatarios_com_falha = :falhos"
         )
         if pedido.estado.terminal:
             expressao += " REMOVE pendencia, processar_em"
@@ -207,55 +239,74 @@ class RepositorioDePedidosDynamo:
         except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
             raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
-    def registrar_intencao_parte(
-        self, pedido: str, indice: int, texto: str, instante: datetime
-    ) -> None:
+    @staticmethod
+    def _chave_da_parte(destinatario: int, indice: int) -> str:
+        """v2: a mesma parte pode ter desfechos diferentes por destinatário,
+        então o destinatário faz parte da chave — não só o índice."""
+        return f"parte#{destinatario}#{indice:03d}"
+
+    @staticmethod
+    def _item_do_indice_de_envio(pedido: str, destinatario: int) -> dict[str, Any] | None:
+        if not pedido.startswith("diaria#"):
+            return None
+        try:
+            dia = date.fromisoformat(pedido.rsplit("#", 1)[-1])
+        except ValueError:
+            return None
+        return {
+            "pk": f"status#{destinatario}",
+            "sk": f"diaria#{dia.isoformat()}",
+            "pedido": pedido,
+        }
+
+    def registrar_intencao_parte(self, intencao: IntencaoDeParte) -> None:
         """Registra a intenção de enviar uma parte antes do envio externo.
 
         A intenção é um rastro operacional: se o processo cair antes da confirmação,
         as próximas leituras podem distinguir "nunca confirmado" de "confirmado".
         """
-        self.tabela.put_item(
-            Item={
-                "pk": self.chave_do_pedido(pedido),
-                "sk": f"parte#{indice:03d}",
-                "indice": indice,
-                "identidade": Pedido.identidade_de_parte(pedido, indice),
-                "texto": texto,
-                "estado": "intencao",
-                "intencao_em": em_utc(instante).isoformat(timespec="microseconds"),
-            }
-        )
-
-    def confirmar_parte(
-        self,
-        pedido: str,
-        indice: int,
-        texto: str,
-        message_id: int,
-        instante: datetime,
-        sequencial: int | None = None,
-    ) -> None:
-        """Registra uma parte como entregue, com o texto que foi de fato enviado.
-
-        Guardar o texto — e não uma referência à frase — é o que preserva o
-        histórico quando a origem muda depois (spec, 4.8). Quando `sequencial` é
-        informado, a confirmação só vale se ainda for o dono do lease: é a
-        garantia de que um executor superado não confirma entrega (AC03).
-        """
-        item = {
-            "pk": self.chave_do_pedido(pedido),
-            "sk": f"parte#{indice:03d}",
-            "indice": indice,
-            "identidade": Pedido.identidade_de_parte(pedido, indice),
-            "texto": texto,
-            "message_id": message_id,
-            "estado": "confirmada",
-            "confirmada_em": em_utc(instante).isoformat(timespec="microseconds"),
-        }
+        nome = self.tabela.name
+        chave = intencao.chave
+        sequencial = intencao.tentativa.sequencial
         if sequencial is None:
-            self.tabela.put_item(Item=item)
-            return
+            raise ValueError("intenção de envio exige sequencial")
+        item = {
+            "pk": self.chave_do_pedido(chave.pedido),
+            "sk": self._chave_da_parte(chave.destinatario, chave.indice),
+            "indice": chave.indice,
+            "destinatario": chave.destinatario,
+            "identidade": Pedido.identidade_de_parte(
+                chave.pedido, chave.destinatario, chave.indice
+            ),
+            "texto": intencao.texto,
+            "estado": "intencao",
+            "intencao_em": em_utc(intencao.tentativa.instante).isoformat(timespec="microseconds"),
+        }
+        try:
+            self.tabela.meta.client.transact_write_items(
+                TransactItems=[
+                    {
+                        "ConditionCheck": {
+                            "TableName": nome,
+                            "Key": {"pk": self.chave_do_pedido(chave.pedido), "sk": "pedido"},
+                            "ConditionExpression": "attribute_exists(pk) AND lease_dono = :seq",
+                            "ExpressionAttributeValues": {":seq": sequencial},
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": nome,
+                            "Item": item,
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        }
+                    },
+                ]
+            )
+        except self.tabela.meta.client.exceptions.TransactionCanceledException:
+            raise ConflitoDeConcorrencia("pedido ou parte avançaram em outro executor") from None
+
+    def descartar_intencao_parte(self, chave: ChaveDeParte, sequencial: int) -> None:
+        """Remove uma intenção somente após rejeição inequívoca do provedor."""
         nome = self.tabela.name
         try:
             self.tabela.meta.client.transact_write_items(
@@ -263,62 +314,162 @@ class RepositorioDePedidosDynamo:
                     {
                         "ConditionCheck": {
                             "TableName": nome,
-                            "Key": {"pk": self.chave_do_pedido(pedido), "sk": "pedido"},
-                            "ConditionExpression": (
-                                "attribute_not_exists(lease_dono) OR lease_dono = :seq"
-                            ),
+                            "Key": {"pk": self.chave_do_pedido(chave.pedido), "sk": "pedido"},
+                            "ConditionExpression": "attribute_exists(pk) AND lease_dono = :seq",
                             "ExpressionAttributeValues": {":seq": sequencial},
                         }
                     },
-                    {"Put": {"TableName": nome, "Item": item}},
+                    {
+                        "Delete": {
+                            "TableName": nome,
+                            "Key": {
+                                "pk": self.chave_do_pedido(chave.pedido),
+                                "sk": self._chave_da_parte(chave.destinatario, chave.indice),
+                            },
+                            "ConditionExpression": "#estado = :intencao",
+                            "ExpressionAttributeNames": {"#estado": "estado"},
+                            "ExpressionAttributeValues": {":intencao": "intencao"},
+                        }
+                    },
                 ]
             )
         except self.tabela.meta.client.exceptions.TransactionCanceledException:
+            raise ConflitoDeConcorrencia("pedido ou parte avançaram em outro executor") from None
+
+    def confirmar_parte(self, confirmacao: ConfirmacaoDeParte) -> None:
+        """Registra uma parte como entregue, com o texto que foi de fato enviado.
+
+        Guardar o texto — e não uma referência à frase — é o que preserva o
+        histórico quando a origem muda depois (spec, 4.8). Quando `sequencial` é
+        informado, a confirmação só vale se ainda for o dono do lease: é a
+        garantia de que um executor superado não confirma entrega (AC03).
+        """
+        chave = confirmacao.chave
+        item = {
+            "pk": self.chave_do_pedido(chave.pedido),
+            "sk": self._chave_da_parte(chave.destinatario, chave.indice),
+            "indice": chave.indice,
+            "destinatario": chave.destinatario,
+            "identidade": Pedido.identidade_de_parte(
+                chave.pedido, chave.destinatario, chave.indice
+            ),
+            "texto": confirmacao.conteudo.texto,
+            "message_id": confirmacao.conteudo.message_id,
+            "estado": "confirmada",
+            "confirmada_em": em_utc(confirmacao.tentativa.instante).isoformat(
+                timespec="microseconds"
+            ),
+        }
+        indice_de_envio = self._item_do_indice_de_envio(chave.pedido, chave.destinatario)
+        sequencial = confirmacao.tentativa.sequencial
+        if sequencial is None:
+            self.tabela.put_item(Item=item)
+            if indice_de_envio is not None:
+                self.tabela.put_item(Item=indice_de_envio)
+            return
+        nome = self.tabela.name
+        try:
+            transacao = [
+                {
+                    "ConditionCheck": {
+                        "TableName": nome,
+                        "Key": {"pk": self.chave_do_pedido(chave.pedido), "sk": "pedido"},
+                        "ConditionExpression": (
+                            "attribute_not_exists(lease_dono) OR lease_dono = :seq"
+                        ),
+                        "ExpressionAttributeValues": {":seq": sequencial},
+                    }
+                },
+                {"Put": {"TableName": nome, "Item": item}},
+            ]
+            if indice_de_envio is not None:
+                transacao.append({"Put": {"TableName": nome, "Item": indice_de_envio}})
+            self.tabela.meta.client.transact_write_items(TransactItems=transacao)
+        except self.tabela.meta.client.exceptions.TransactionCanceledException:
             raise ConflitoDeConcorrencia("lease do pedido pertence a outro executor") from None
 
-    def marcar_parte_incerta(
-        self, pedido: str, indice: int, motivo: str, instante: datetime
-    ) -> None:
-        """Marca a parte como incerta para suspender reenvio automático.
+    def marcar_parte_incerta(self, incerteza: IncertezaDeParte) -> None:
+        """Converte somente uma intenção, mantendo o conteúdo e o dono vigente."""
+        nome = self.tabela.name
+        chave = incerteza.chave
+        sequencial = incerteza.tentativa.sequencial
+        if sequencial is None:
+            raise ValueError("incerteza de envio exige sequencial")
+        indice_de_envio = self._item_do_indice_de_envio(chave.pedido, chave.destinatario)
+        try:
+            transacao = [
+                {
+                    "ConditionCheck": {
+                        "TableName": nome,
+                        "Key": {"pk": self.chave_do_pedido(chave.pedido), "sk": "pedido"},
+                        "ConditionExpression": "attribute_exists(pk) AND lease_dono = :seq",
+                        "ExpressionAttributeValues": {":seq": sequencial},
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": nome,
+                        "Key": {
+                            "pk": self.chave_do_pedido(chave.pedido),
+                            "sk": self._chave_da_parte(chave.destinatario, chave.indice),
+                        },
+                        "UpdateExpression": (
+                            "SET #estado = :incerto, motivo = :m, incerta_em = :t"
+                        ),
+                        "ConditionExpression": "#estado = :intencao",
+                        "ExpressionAttributeNames": {"#estado": "estado"},
+                        "ExpressionAttributeValues": {
+                            ":incerto": "incerto",
+                            ":intencao": "intencao",
+                            ":m": incerteza.motivo,
+                            ":t": em_utc(incerteza.tentativa.instante).isoformat(
+                                timespec="microseconds"
+                            ),
+                        },
+                    }
+                },
+            ]
+            if indice_de_envio is not None:
+                transacao.append({"Put": {"TableName": nome, "Item": indice_de_envio}})
+            self.tabela.meta.client.transact_write_items(TransactItems=transacao)
+        except self.tabela.meta.client.exceptions.TransactionCanceledException:
+            raise ConflitoDeConcorrencia("pedido ou parte avançaram em outro executor") from None
 
-        A parte pode ter sido entregue do ponto de vista do Telegram, mas a
-        confirmação durável ainda não foi persistida. Em vez de duplicar,
-        registramos o estado incerto e evitamos reenvio automático.
-        """
-        self.tabela.put_item(
-            Item={
-                "pk": self.chave_do_pedido(pedido),
-                "sk": f"parte#{indice:03d}",
-                "indice": indice,
-                "identidade": Pedido.identidade_de_parte(pedido, indice),
-                "estado": "incerto",
-                "motivo": motivo,
-                "incerta_em": em_utc(instante).isoformat(timespec="microseconds"),
-            }
-        )
-
-    def indices_confirmados(self, pedido: str) -> set[int]:
+    def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") != "incerto"
             and item.get("estado") != "intencao"
             and item.get("message_id") not in (None, 0)
         }
 
-    def indices_incertos(self, pedido: str) -> set[int]:
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") == "incerto"
         }
 
-    def indices_intencoes(self, pedido: str) -> set[int]:
+    def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]:
         return {
             int(item["indice"])
-            for item in self._listar_itens(pedido, "parte#")
+            for item in self._listar_itens(pedido, f"parte#{destinatario}#")
             if item.get("estado") == "intencao"
         }
+
+    def ultimo_pedido_do_destinatario(self, destinatario: int, antes_de: date) -> Pedido | None:
+        resposta = self.tabela.query(
+            KeyConditionExpression=Key("pk").eq(f"status#{destinatario}")
+            & Key("sk").lt(f"diaria#{antes_de.isoformat()}"),
+            ScanIndexForward=False,
+            Limit=1,
+            ConsistentRead=True,
+        )
+        itens = resposta.get("Items", [])
+        if not itens:
+            return None
+        return self.obter(str(itens[0]["pedido"]))
 
     def buscar_vencidos(self, instante: datetime) -> list[Pedido]:
         """Consulta somente pendências; revalida o índice eventualmente consistente."""

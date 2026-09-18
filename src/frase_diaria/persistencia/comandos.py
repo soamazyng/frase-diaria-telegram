@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from frase_diaria.telegram.atualizacao import Atualizacao
+from frase_diaria.dominio.atualizacao import Atualizacao
 
 
 @dataclass(frozen=True)
@@ -34,3 +34,31 @@ class RepositorioDeComandosDynamo:
         except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
             return False
         return True
+
+    def reivindicar_acao(self, update_id: int) -> bool:
+        try:
+            self.tabela.update_item(
+                Key={"pk": f"comando#{update_id}", "sk": "registro"},
+                UpdateExpression="SET acao_estado = :iniciada",
+                ConditionExpression="attribute_exists(pk) AND attribute_not_exists(acao_estado)",
+                ExpressionAttributeValues={":iniciada": "iniciada"},
+            )
+        except self.tabela.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+        return True
+
+    def liberar_acao(self, update_id: int) -> None:
+        self.tabela.update_item(
+            Key={"pk": f"comando#{update_id}", "sk": "registro"},
+            UpdateExpression="REMOVE acao_estado",
+            ConditionExpression="acao_estado = :iniciada",
+            ExpressionAttributeValues={":iniciada": "iniciada"},
+        )
+
+    def marcar_acao_concluida(self, update_id: int) -> None:
+        self.tabela.update_item(
+            Key={"pk": f"comando#{update_id}", "sk": "registro"},
+            UpdateExpression="SET acao_estado = :concluida",
+            ConditionExpression="acao_estado = :iniciada",
+            ExpressionAttributeValues={":iniciada": "iniciada", ":concluida": "concluida"},
+        )

@@ -1,0 +1,58 @@
+name: Obter artefato verificado
+description: Baixa um build do cache do Actions ou do arquivo durável e confere checksum externo.
+
+inputs:
+  sha:
+    description: SHA imutável do build.
+    required: true
+  checksum:
+    description: SHA-256 registrado na implantação saudável.
+    required: true
+
+outputs:
+  disponivel:
+    description: sim quando o artefato foi obtido e verificado.
+    value: ${{ steps.obter.outputs.disponivel }}
+
+runs:
+  using: composite
+  steps:
+    - name: Baixar e verificar
+      id: obter
+      shell: bash
+      env:
+        SHA_ARTEFATO: ${{ inputs.sha }}
+        CHECKSUM_ESPERADO: ${{ inputs.checksum }}
+      run: |
+        set -euo pipefail
+        echo "disponivel=nao" >> "$GITHUB_OUTPUT"
+        if ! [[ "$CHECKSUM_ESPERADO" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::a implantação saudável não possui checksum válido"
+          exit 0
+        fi
+
+        idArtefato="$(gh api "repos/$GH_REPO/actions/artifacts?name=artefato-$SHA_ARTEFATO&per_page=10" \
+          --jq '[.artifacts[] | select(.expired == false)][0].id // empty')"
+        rm -rf .aws-sam/build
+        mkdir -p .aws-sam/build
+        if [ -n "$idArtefato" ]; then
+          gh api "repos/$GH_REPO/actions/artifacts/$idArtefato/zip" > /tmp/artefato-recuperacao.zip
+        else
+          if [ -z "$BUCKET_ARTEFATOS" ] || ! aws s3 cp \
+            "s3://$BUCKET_ARTEFATOS/recuperacao/$GITHUB_REPOSITORY_ID/$SHA_ARTEFATO.zip" \
+            /tmp/artefato-recuperacao.zip --only-show-errors 2>/dev/null; then
+            echo "::error::artefato de recuperação indisponível"
+            exit 0
+          fi
+        fi
+        unzip -q /tmp/artefato-recuperacao.zip -d .aws-sam/build
+
+        checksumInterno="$(cat .aws-sam/build/CHECKSUM.txt)"
+        checksumCalculado="$(find .aws-sam/build -type f ! -name CHECKSUM.txt -print0 \
+          | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+        if [ "$checksumInterno" != "$checksumCalculado" ] || \
+          [ "$checksumCalculado" != "$CHECKSUM_ESPERADO" ]; then
+          echo "::error::checksum do artefato de recuperação não confere"
+          exit 0
+        fi
+        echo "disponivel=sim" >> "$GITHUB_OUTPUT"

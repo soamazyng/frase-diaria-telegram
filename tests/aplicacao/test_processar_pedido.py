@@ -11,16 +11,60 @@ from typing import Any
 
 import pytest
 
-from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
+from frase_diaria.aplicacao.consultar_status import ConsultarStatus
+from frase_diaria.aplicacao.encerrar_pedido import (
+    ContextoDoEncerramento,
+    EncerrarPedido,
+    PoliticaDeContencaoDoCiclo,
+)
+from frase_diaria.aplicacao.entregar_pedido import (
+    DesfechoDaEntrega,
+    EntregadorDePedido,
+    ResultadoDaEntrega,
+)
+from frase_diaria.aplicacao.portas import (
+    ChaveDeParte,
+    ClassificacaoDoErroDeEnvio,
+    ConfirmacaoDeParte,
+    ConflitoDeConcorrencia,
+    IncertezaDeParte,
+    IntencaoDeParte,
+)
 from frase_diaria.aplicacao.processar_pedido import ProcessarPedido, ReservaPendente
 from frase_diaria.dominio.ciclo import Ciclo
+from frase_diaria.dominio.colecao import SnapshotPersistido, TentativaDeSincronizacao
 from frase_diaria.dominio.frase import Frase
 from frase_diaria.dominio.pedido import EstadoDoPedido, Origem, Pedido
 from frase_diaria.telegram.canal import ErroDoTelegram
 
-CHAT = 672024065
+CHAT = 101
 UMA_FRASE = Frase(identidade="bloco-1", partes=("parte um", "parte dois"))
 INSTANTE = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+
+
+def _sem_dispersao(inicio: float, fim: float) -> float:
+    del fim
+    return inicio
+
+
+def _erro_transitorio(
+    mensagem: str, codigo_http: int | None = None, retry_after_s: float | None = None
+) -> ErroDoTelegram:
+    return ErroDoTelegram(
+        mensagem,
+        ClassificacaoDoErroDeEnvio(
+            codigo_http=codigo_http,
+            retry_after_s=retry_after_s,
+            transitorio=True,
+        ),
+    )
+
+
+def _erro_ambiguo(mensagem: str) -> ErroDoTelegram:
+    return ErroDoTelegram(
+        mensagem,
+        ClassificacaoDoErroDeEnvio(transitorio=True, resultado_ambiguo=True),
+    )
 
 
 class RelogioFixo:
@@ -73,32 +117,56 @@ class RepositorioFalso:
         self.pedido = pedido
         self.salvos.append(pedido)
 
-    def registrar_intencao_parte(self, pedido: str, indice: int, texto: str, instante: Any) -> None:
-        self.intencoes.append({"indice": indice, "texto": texto})
+    def registrar_intencao_parte(self, intencao: IntencaoDeParte) -> None:
+        self._verificar_lease(intencao.tentativa.sequencial)
+        self.intencoes.append(
+            {
+                "destinatario": intencao.chave.destinatario,
+                "indice": intencao.chave.indice,
+                "texto": intencao.texto,
+            }
+        )
 
-    def confirmar_parte(
-        self,
-        pedido: str,
-        indice: int,
-        texto: str,
-        message_id: int,
-        instante: Any,
-        sequencial: int | None = None,
-    ) -> None:
+    def descartar_intencao_parte(self, chave: ChaveDeParte, sequencial: int) -> None:
         self._verificar_lease(sequencial)
-        self.partes.append({"indice": indice, "texto": texto, "message_id": message_id})
+        self.intencoes = [
+            parte
+            for parte in self.intencoes
+            if not (parte["destinatario"] == chave.destinatario and parte["indice"] == chave.indice)
+        ]
 
-    def marcar_parte_incerta(self, pedido: str, indice: int, motivo: str, instante: Any) -> None:
-        self.incertas.append({"indice": indice, "motivo": motivo})
+    def confirmar_parte(self, confirmacao: ConfirmacaoDeParte) -> None:
+        self._verificar_lease(confirmacao.tentativa.sequencial)
+        self.partes.append(
+            {
+                "destinatario": confirmacao.chave.destinatario,
+                "indice": confirmacao.chave.indice,
+                "texto": confirmacao.conteudo.texto,
+                "message_id": confirmacao.conteudo.message_id,
+            }
+        )
 
-    def indices_confirmados(self, pedido: str) -> set[int]:
-        return {p["indice"] for p in self.partes}
+    def marcar_parte_incerta(self, incerteza: IncertezaDeParte) -> None:
+        self._verificar_lease(incerteza.tentativa.sequencial)
+        self.incertas.append(
+            {
+                "destinatario": incerteza.chave.destinatario,
+                "indice": incerteza.chave.indice,
+                "motivo": incerteza.motivo,
+            }
+        )
 
-    def indices_incertos(self, pedido: str) -> set[int]:
-        return {p["indice"] for p in self.incertas}
+    def indices_confirmados(self, pedido: str, destinatario: int) -> set[int]:
+        return {p["indice"] for p in self.partes if p["destinatario"] == destinatario}
 
-    def indices_intencoes(self, pedido: str) -> set[int]:
-        return {p["indice"] for p in self.intencoes}
+    def indices_incertos(self, pedido: str, destinatario: int) -> set[int]:
+        return {p["indice"] for p in self.incertas if p["destinatario"] == destinatario}
+
+    def indices_intencoes(self, pedido: str, destinatario: int) -> set[int]:
+        return {p["indice"] for p in self.intencoes if p["destinatario"] == destinatario}
+
+    def ultimo_pedido_do_destinatario(self, destinatario: int, antes_de: Any) -> Pedido | None:
+        return None
 
     def registrar_tentativa(
         self, pedido: str, resultado: str, erro: str | None, instante: Any
@@ -127,8 +195,23 @@ class CanalEspiao:
         return 900 + len(self.enviados)
 
 
+class CanalPorDestinatario:
+    """Canal cujo comportamento depende de QUEM está recebendo, não da ordem
+    de envio — o que `CanalEspiao` não permite simular."""
+
+    def __init__(self, falha_para: dict[int, ErroDoTelegram] | None = None) -> None:
+        self.falha_para = falha_para or {}
+        self.enviados: list[tuple[int, str]] = []
+
+    def enviar_texto(self, chat_id: int, texto: str) -> int:
+        if chat_id in self.falha_para:
+            raise self.falha_para[chat_id]
+        self.enviados.append((chat_id, texto))
+        return 900 + len(self.enviados)
+
+
 def _pedido_pendente() -> Pedido:
-    return Pedido(identidade="extra#42", origem=Origem.EXTRA, chat_id=CHAT)
+    return Pedido(identidade="extra#42", origem=Origem.EXTRA, destinatarios=(CHAT,))
 
 
 class ReservaEmMemoria:
@@ -164,6 +247,33 @@ class CiclosEmMemoria:
         self.versao += 1
 
 
+def _encerrador(repositorio: Any, ciclos: Any) -> EncerrarPedido:
+    return EncerrarPedido(
+        repositorio,
+        ciclos,
+        PoliticaDeContencaoDoCiclo(lambda _: None, _sem_dispersao),
+    )
+
+
+def test_encerrador_repetido_conclui_o_pedido_e_consumo_uma_unica_vez() -> None:
+    pedido = _pedido_pendente().reservar("bloco-1").iniciar_envio()
+    ciclo = Ciclo.primeiro().reservar("bloco-1")
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria(ciclo)
+    encerrador = _encerrador(repositorio, ciclos)
+    contexto = ContextoDoEncerramento(ciclo, versao_do_ciclo=0, sequencial=1)
+    entrega = ResultadoDaEntrega(pedido, DesfechoDaEntrega.CONCLUIDO, confirmou_algo=True)
+
+    resultado = encerrador.apos_entrega(contexto, entrega)
+    resultado_repetido = encerrador.apos_entrega(contexto, entrega)
+
+    assert resultado.estado is EstadoDoPedido.ENVIADO
+    assert resultado_repetido.estado is EstadoDoPedido.ENVIADO
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.entregas_neste_ciclo == 1
+    assert ciclos.versao == 1
+
+
 def _worker(
     repositorio: Any,
     canal: Any,
@@ -171,12 +281,14 @@ def _worker(
     ciclos: Any | None = None,
 ) -> ProcessarPedido:
     ciclos = ciclos if ciclos is not None else CiclosEmMemoria()
+    relogio = RelogioFixo()
     return ProcessarPedido(
         repositorio=repositorio,
         fonte=fonte if fonte is not None else FonteFixa(),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -202,8 +314,18 @@ def test_cada_parte_e_confirmada_individualmente_com_o_texto_enviado() -> None:
     _worker(repositorio, canal).executar("extra#42")
 
     assert len(repositorio.partes) == 2
-    assert repositorio.partes[0] == {"indice": 0, "texto": "parte um", "message_id": 901}
-    assert repositorio.partes[1] == {"indice": 1, "texto": "parte dois", "message_id": 902}
+    assert repositorio.partes[0] == {
+        "destinatario": CHAT,
+        "indice": 0,
+        "texto": "parte um",
+        "message_id": 901,
+    }
+    assert repositorio.partes[1] == {
+        "destinatario": CHAT,
+        "indice": 1,
+        "texto": "parte dois",
+        "message_id": 902,
+    }
 
 
 def test_registra_a_tentativa_bem_sucedida() -> None:
@@ -228,11 +350,83 @@ def test_resposta_ambigua_do_telegram_marca_o_pedido_como_incerto() -> None:
     assert resultado.frase_reservada == "bloco-1"
     assert repositorio.incertas == [
         {
+            "destinatario": CHAT,
             "indice": 0,
             "motivo": "Telegram pode ter aceitado a parte, mas não houve confirmação durável",
         }
     ]
     assert repositorio.partes == []
+
+
+def test_intencao_ja_registrada_sem_confirmacao_tambem_persiste_a_incerteza() -> None:
+    """Retomar intenção abandonada mantém a ambiguidade visível no histórico."""
+    repositorio = RepositorioFalso(_pedido_pendente())
+    repositorio.intencoes.append({"destinatario": CHAT, "indice": 0, "texto": "parte um"})
+
+    resultado = _worker(repositorio, CanalEspiao()).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert repositorio.incertas == [
+        {
+            "destinatario": CHAT,
+            "indice": 0,
+            "motivo": "intenção registrada sem confirmação; reenvio automático suspenso",
+        }
+    ]
+
+
+def test_retomada_de_intencao_antiga_sem_snapshot_suspende_sem_trocar_frase() -> None:
+    antigo = replace(
+        _pedido_pendente().reservar("bloco-sumida").iniciar_envio(),
+        total_de_partes=2,
+        partes_reservadas=None,
+    )
+    repositorio = RepositorioFalso(antigo)
+    repositorio.intencoes.append({"destinatario": CHAT, "indice": 0, "texto": "parte um"})
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
+    canal = CanalEspiao()
+
+    resultado = _worker(
+        repositorio,
+        canal,
+        fonte=FonteFixa((Frase("bloco-2", ("frase nova",)),)),
+        ciclos=ciclos,
+    ).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert resultado.frase_reservada == "bloco-sumida"
+    assert canal.enviados == []
+    assert ciclos.ciclo.foi_consumida("bloco-sumida")
+    assert not ciclos.ciclo.foi_consumida("bloco-2")
+
+
+def test_retomada_apos_converter_intencao_legada_preserva_incerteza() -> None:
+    antigo = replace(
+        _pedido_pendente().reservar("bloco-sumida").iniciar_envio(),
+        total_de_partes=2,
+        partes_reservadas=None,
+    )
+    repositorio = RepositorioFalso(antigo)
+    repositorio.incertas.append(
+        {"destinatario": CHAT, "indice": 0, "motivo": "conversão interrompida"}
+    )
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
+    canal = CanalEspiao()
+
+    resultado = _worker(
+        repositorio,
+        canal,
+        fonte=FonteFixa((Frase("bloco-2", ("frase nova",)),)),
+        ciclos=ciclos,
+    ).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert resultado.frase_reservada == "bloco-sumida"
+    assert canal.enviados == []
+    assert ciclos.ciclo.foi_consumida("bloco-sumida")
 
 
 # --- o worker lê da persistência ---------------------------------------------
@@ -326,13 +520,39 @@ def test_tentativa_dentro_do_limite_nao_e_registrada_como_atraso(
 def test_retomada_envia_apenas_as_partes_que_faltam() -> None:
     em_andamento = _pedido_pendente().reservar("bloco-1")
     repositorio = RepositorioFalso(em_andamento)
-    repositorio.partes.append({"indice": 0, "texto": "parte um", "message_id": 901})
+    repositorio.partes.append(
+        {"destinatario": CHAT, "indice": 0, "texto": "parte um", "message_id": 901}
+    )
     canal = CanalEspiao()
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
 
     _worker(repositorio, canal, ciclos=ciclos).executar("extra#42")
 
     assert canal.enviados == ["parte dois"]
+
+
+def test_retomada_parcial_preserva_a_versao_da_frase_que_comecou_a_enviar() -> None:
+    em_andamento = replace(
+        _pedido_pendente().reservar("bloco-1").iniciar_envio(),
+        partes_reservadas=("versão original um", "versão original dois"),
+        total_de_partes=2,
+    )
+    repositorio = RepositorioFalso(em_andamento)
+    repositorio.partes.append(
+        {
+            "destinatario": CHAT,
+            "indice": 0,
+            "texto": "versão original um",
+            "message_id": 901,
+        }
+    )
+    editada = Frase("bloco-1", ("versão editada um", "versão editada dois"))
+    canal = CanalEspiao()
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+
+    _worker(repositorio, canal, fonte=FonteFixa((editada,)), ciclos=ciclos).executar("extra#42")
+
+    assert canal.enviados == ["versão original dois"]
 
 
 # --- coleção vazia -----------------------------------------------------------
@@ -397,6 +617,100 @@ def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
     assert not repositorio.pedido.estado.terminal
 
 
+class FonteQueQuebra:
+    def __init__(self) -> None:
+        self.chamadas = 0
+
+    def listar(self) -> tuple[Frase, ...]:
+        self.chamadas += 1
+        raise RuntimeError("Notion instável")
+
+
+def test_erro_inesperado_antes_da_entrega_expira_o_pedido_com_prazo_vencido() -> None:
+    """Regressão de incidente real: um /frase falhando na sincronização com o
+    Notion (antes de qualquer tentativa de entrega) nunca era comparado ao
+    prazo — só `EntregadorDePedido` checava isso, e ela nunca era alcançada.
+    O pedido reconciliado a cada 5 min por mais de um dia inteiro, com
+    centenas de tentativas, todas registrando o mesmo "erro de integração".
+    """
+    pedido = replace(_pedido_pendente().reservar("bloco-1"), prazo=INSTANTE - timedelta(minutes=1))
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+    fonte = FonteQueQuebra()
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=fonte, ciclos=ciclos).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert fonte.chamadas == 0  # nunca tenta sincronizar um pedido já vencido
+    assert ciclos.ciclo.reservadas == frozenset()
+
+
+def test_erro_inesperado_na_fonte_antes_do_prazo_continua_propagando() -> None:
+    """Não regredir: na primeira tentativa, sem prazo vencido, a falha antes
+    da entrega ainda propaga para que a Lambda (ou o reconciliador) retente —
+    só o prazo, ou uma tentativa única já gasta, encerra o pedido cedo.
+    """
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalEspiao(), fonte=FonteQueQuebra()).executar("extra#42")
+
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+
+
+def test_erro_inesperado_antes_da_entrega_com_prazo_vencido_e_parte_confirmada_vira_parcial() -> (
+    None
+):
+    """`EncerrarPedido.expirar` decide entre EXPIRADO e PARCIAL a partir do que
+    já foi confirmado — este é o caminho de retomada (uma parte já entregue
+    numa tentativa anterior) encontrando o mesmo erro pré-entrega mascarado.
+    """
+    pedido = replace(
+        _pedido_pendente().reservar("bloco-1").iniciar_envio(),
+        prazo=INSTANTE - timedelta(minutes=1),
+    )
+    repositorio = RepositorioFalso(pedido)
+    repositorio.partes.append(
+        {"destinatario": CHAT, "indice": 0, "texto": "parte um", "message_id": 901}
+    )
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=FonteQueQuebra(), ciclos=ciclos).executar(
+        "extra#42"
+    )
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.PARCIAL
+    assert resultado.frase_reservada == "bloco-1"
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+
+
+def test_extra_de_tentativa_unica_com_erro_pre_entrega_encerra_na_segunda_tentativa() -> None:
+    """Um extra de tentativa única (criado após o meio-dia local) não tem
+    `prazo` — a política é "sem retentativa alguma", não "sem limite de tempo"
+    (dominio/tempo.py::PoliticaDeExtra). A primeira tentativa ainda precisa
+    rodar de verdade (spec, 4.5: "cedo ou tarde"), então um erro pré-entrega
+    nela ainda propaga; mas a segunda não pode repetir para sempre.
+    """
+    pedido = replace(_pedido_pendente(), prazo=None, tentativa_unica=True)
+    repositorio = RepositorioFalso(pedido)
+    fonte = FonteQueQuebra()
+
+    with pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalEspiao(), fonte=fonte).executar("extra#42")
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+    assert fonte.chamadas == 1
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=fonte).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert fonte.chamadas == 1  # a segunda tentativa nem chega a sincronizar
+
+
 # --- frase que sumiu da fonte ------------------------------------------------
 
 
@@ -408,7 +722,9 @@ def test_frase_reservada_sumiu_depois_de_entregar_parte_mantem_a_reserva() -> No
     """
     em_andamento = _pedido_pendente().reservar("bloco-sumida").iniciar_envio()
     repositorio = RepositorioFalso(em_andamento)
-    repositorio.partes.append({"indice": 0, "texto": "já foi", "message_id": 901})
+    repositorio.partes.append(
+        {"destinatario": CHAT, "indice": 0, "texto": "já foi", "message_id": 901}
+    )
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
 
     resultado = _worker(repositorio, CanalEspiao(), fonte=FonteFixa(()), ciclos=ciclos).executar(
@@ -470,15 +786,17 @@ class SorteioDoUltimo:
 def _entregar_uma(ciclos: Any, update_id: int, sorteio: Any = None) -> str:
     """Roda um pedido inteiro e devolve o texto entregue."""
     repositorio = RepositorioFalso(
-        Pedido(identidade=f"extra#{update_id}", origem=Origem.EXTRA, chat_id=CHAT)
+        Pedido(identidade=f"extra#{update_id}", origem=Origem.EXTRA, destinatarios=(CHAT,))
     )
     canal = CanalEspiao()
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(COLECAO),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=sorteio if sorteio is not None else SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -688,12 +1006,14 @@ def test_conflito_ao_reservar_propaga_como_reserva_pendente() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
     ciclos = CiclosEmMemoria()
     reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(),
-        canal=CanalEspiao(),
+        entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=reserva,
     )
@@ -717,12 +1037,14 @@ def test_conflito_ao_trocar_de_frase_nao_orfaniza_a_reserva_antiga_no_ciclo() ->
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-sumida"))
     reserva = ReservaQueRecusaAPrimeira(ciclos, repositorio)
     outra = Frase(identidade="bloco-2", partes=("frase nova",))
+    relogio = RelogioFixo()
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa((outra,)),
-        canal=CanalEspiao(),
+        entregador=EntregadorDePedido(repositorio, CanalEspiao(), relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioFixo(),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=reserva,
     )
@@ -781,7 +1103,7 @@ def test_lease_perdido_no_meio_do_envio_abandona_sem_reenviar() -> None:
 
 def test_erro_transitorio_agenda_nova_tentativa_em_vez_de_falhar() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
-    erro = ErroDoTelegram("Bot API respondeu HTTP 500", codigo_http=500, transitorio=True)
+    erro = _erro_transitorio("Bot API respondeu HTTP 500", codigo_http=500)
     canal = CanalEspiao(falhar_na_parte=0, erro=erro)
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -791,11 +1113,63 @@ def test_erro_transitorio_agenda_nova_tentativa_em_vez_de_falhar() -> None:
     assert resultado.frase_reservada == "bloco-1"  # a reserva não é liberada
     assert resultado.proxima_tentativa is not None
     assert resultado.proxima_tentativa > INSTANTE
+    assert repositorio.intencoes == []
+
+
+def test_erro_transitorio_definitivamente_recusado_tenta_a_mesma_parte_de_novo() -> None:
+    repositorio = RepositorioFalso(_pedido_pendente())
+    ciclos = CiclosEmMemoria()
+    erro = _erro_transitorio("Bot API respondeu HTTP 500", codigo_http=500)
+
+    primeiro = _worker(
+        repositorio,
+        CanalEspiao(falhar_na_parte=0, erro=erro),
+        ciclos=ciclos,
+    ).executar("extra#42")
+
+    assert primeiro is not None
+    assert primeiro.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert repositorio.intencoes == []
+    repositorio.pedido = replace(primeiro, proxima_tentativa=INSTANTE)
+
+    canal_recuperado = CanalEspiao()
+    segundo = _worker(repositorio, canal_recuperado, ciclos=ciclos).executar("extra#42")
+
+    assert segundo is not None
+    assert segundo.estado is EstadoDoPedido.ENVIADO
+    assert canal_recuperado.enviados == ["parte um", "parte dois"]
+
+
+def test_falha_ambigua_de_rede_nao_e_reenviada_automaticamente() -> None:
+    repositorio = RepositorioFalso(_pedido_pendente())
+    erro = _erro_ambiguo("falha de rede ao chamar a Bot API")
+
+    resultado = _worker(
+        repositorio,
+        CanalEspiao(falhar_na_parte=0, erro=erro),
+    ).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert repositorio.indices_incertos("extra#42", CHAT) == {0}
+
+
+def test_falha_ambigua_de_um_destinatario_nao_interrompe_o_outro() -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    erro = _erro_ambiguo("conexão encerrada sem resposta da Bot API")
+    canal = CanalPorDestinatario(falha_para={CHAT: erro})
+
+    resultado = _worker(repositorio, canal).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert (CHAT_DO_IRMAO, "parte um") in canal.enviados
+    assert (CHAT_DO_IRMAO, "parte dois") in canal.enviados
 
 
 def test_erro_transitorio_respeita_o_retry_after_do_telegram() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
-    erro = ErroDoTelegram("Bot API recusou: 429", transitorio=True, retry_after_s=7)
+    erro = _erro_transitorio("Bot API recusou: 429", retry_after_s=7)
     canal = CanalEspiao(falhar_na_parte=0, erro=erro)
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -807,7 +1181,7 @@ def test_erro_transitorio_respeita_o_retry_after_do_telegram() -> None:
 def test_erro_transitorio_apos_o_prazo_encerra_em_vez_de_retentar() -> None:
     pedido = replace(_pedido_pendente(), prazo=INSTANTE - timedelta(minutes=1))
     repositorio = RepositorioFalso(pedido)
-    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    erro = _erro_transitorio("Bot API respondeu HTTP 500")
     canal = CanalEspiao(falhar_na_parte=0, erro=erro)
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -851,7 +1225,9 @@ def test_prazo_esgotado_com_parte_ja_enviada_vira_parcial() -> None:
         prazo=INSTANTE - timedelta(minutes=1),
     )
     repositorio = RepositorioFalso(pedido)
-    repositorio.partes.append({"indice": 0, "texto": "parte um", "message_id": 901})
+    repositorio.partes.append(
+        {"destinatario": CHAT, "indice": 0, "texto": "parte um", "message_id": 901}
+    )
     ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
     canal = CanalEspiao()
 
@@ -893,12 +1269,14 @@ def test_prazo_e_checado_por_parte_nao_so_uma_vez_por_execucao() -> None:
     repositorio = RepositorioFalso(pedido)
     ciclos = CiclosEmMemoria()
     canal = CanalQueAtrasaAposEnviar()
+    relogio = RelogioQueAvancaAposUmEnvio(canal)
     worker = ProcessarPedido(
         repositorio=repositorio,
         fonte=FonteFixa(),
-        canal=canal,
+        entregador=EntregadorDePedido(repositorio, canal, relogio, _sem_dispersao),
+        encerrador=_encerrador(repositorio, ciclos),
         sorteio=SorteioPrevisivel(),
-        relogio=RelogioQueAvancaAposUmEnvio(canal),
+        relogio=relogio,
         ciclos=ciclos,
         reserva=ReservaEmMemoria(ciclos, repositorio),
     )
@@ -930,7 +1308,7 @@ def test_extra_de_tentativa_unica_ainda_faz_a_tentativa_imediata() -> None:
 def test_extra_de_tentativa_unica_nao_retenta_erro_transitorio() -> None:
     pedido = replace(_pedido_pendente(), prazo=None, tentativa_unica=True)
     repositorio = RepositorioFalso(pedido)
-    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    erro = _erro_transitorio("Bot API respondeu HTTP 500")
     canal = CanalEspiao(falhar_na_parte=0, erro=erro)
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -943,7 +1321,7 @@ def test_primeiro_backoff_transitorio_e_a_base_sem_dobrar() -> None:
     # Regressão (achado do code-review): sequencial=1 é a primeira tentativa, e
     # o primeiro backoff deve ser BASE_DO_BACKOFF_S — não o dobro dela.
     repositorio = RepositorioFalso(_pedido_pendente())
-    erro = ErroDoTelegram("Bot API respondeu HTTP 500", transitorio=True)
+    erro = _erro_transitorio("Bot API respondeu HTTP 500")
     canal = CanalEspiao(falhar_na_parte=0, erro=erro)
 
     resultado = _worker(repositorio, canal).executar("extra#42")
@@ -951,8 +1329,8 @@ def test_primeiro_backoff_transitorio_e_a_base_sem_dobrar() -> None:
     assert resultado is not None
     assert resultado.proxima_tentativa is not None
     atraso = (resultado.proxima_tentativa - INSTANTE).total_seconds()
-    base = ProcessarPedido.BASE_DO_BACKOFF_S
-    assert base <= atraso <= base * 1.1  # base + até 10% de dispersão
+    base = EntregadorDePedido.BASE_DO_BACKOFF_S
+    assert atraso == base
 
 
 def test_conflito_ao_consumir_rele_o_ciclo_e_tenta_de_novo() -> None:
@@ -966,3 +1344,330 @@ def test_conflito_ao_consumir_rele_o_ciclo_e_tenta_de_novo() -> None:
 
     assert ciclos.chamadas == 3
     assert ciclos.ciclo.foi_consumida("bloco-1")
+
+
+# --- diária com múltiplos destinatários (ticket 25) ---------------------------
+
+CHAT_DO_IRMAO = 111222333
+
+
+def _diaria_compartilhada() -> Pedido:
+    return Pedido(
+        identidade="diaria#2026-09-07", origem=Origem.DIARIA, destinatarios=(CHAT, CHAT_DO_IRMAO)
+    )
+
+
+def test_entregador_agrega_falha_sem_finalizar_o_pedido() -> None:
+    """O módulo de entrega relata o desfecho; o coordenador encerra o pedido."""
+    pedido = _diaria_compartilhada().reservar("bloco-1").iniciar_envio()
+    repositorio = RepositorioFalso(pedido)
+    canal = CanalPorDestinatario(
+        falha_para={CHAT_DO_IRMAO: ErroDoTelegram("Bot API respondeu HTTP 403")}
+    )
+    entregador = EntregadorDePedido(repositorio, canal, RelogioFixo(), _sem_dispersao)
+
+    resultado = entregador.entregar(pedido, UMA_FRASE, sequencial=1)
+
+    assert resultado.desfecho is DesfechoDaEntrega.FALHOU
+    assert resultado.confirmou_algo
+    assert resultado.pedido.estado is EstadoDoPedido.ENVIANDO
+    assert resultado.pedido.destinatarios_com_falha == (CHAT_DO_IRMAO,)
+    assert canal.enviados == [(CHAT, "parte um"), (CHAT, "parte dois")]
+
+
+def test_resultado_aguardando_exige_proxima_tentativa() -> None:
+    with pytest.raises(ValueError, match="próxima tentativa"):
+        ResultadoDaEntrega(_diaria_compartilhada(), DesfechoDaEntrega.AGUARDANDO)
+
+
+def test_diaria_compartilhada_entrega_a_mesma_frase_a_todos_os_destinatarios() -> None:
+    """AC32: um único sorteio, a mesma frase para todo mundo."""
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    canal = CanalPorDestinatario()
+    ciclos = CiclosEmMemoria()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.ENVIADO
+    assert sorted(canal.enviados) == sorted(
+        [
+            (CHAT, "parte um"),
+            (CHAT, "parte dois"),
+            (CHAT_DO_IRMAO, "parte um"),
+            (CHAT_DO_IRMAO, "parte dois"),
+        ]
+    )
+    # AC34: uma única reserva/consumo no ciclo, não uma por destinatário.
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset()
+    assert ciclos.ciclo.entregas_neste_ciclo == 1
+
+
+def test_falha_permanente_a_um_destinatario_nao_impede_entrega_ao_outro() -> None:
+    """AC33, quebrando a invariante de propósito: um erro permanente do
+    Telegram para um destinatário não pode custar a entrega ao outro nem
+    duplicar (ou pular) o consumo da frase no ciclo."""
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    canal = CanalPorDestinatario(
+        falha_para={CHAT_DO_IRMAO: ErroDoTelegram("Bot API respondeu HTTP 403")}
+    )
+    ciclos = CiclosEmMemoria()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.PARCIAL
+    assert (CHAT, "parte um") in canal.enviados
+    assert (CHAT, "parte dois") in canal.enviados
+    assert all(chat_id != CHAT_DO_IRMAO for chat_id, _ in canal.enviados)
+    # A frase é consumida exatamente uma vez — nunca uma reserva órfã, nunca
+    # duas vezes — mesmo com um destinatário concluído e outro falho.
+    assert ciclos.ciclo.foi_consumida("bloco-1")
+    assert ciclos.ciclo.reservadas == frozenset()
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+
+
+def test_motivo_registrado_preserva_todos_os_problemas_sem_expor_destinatarios() -> None:
+    """Achado do code-review: o motivo de um destinatário que falhou não pode
+    desaparecer só porque outro, no mesmo instante, ficou incerto."""
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+
+    class CanalComDoisDesfechos:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            if chat_id == CHAT:
+                raise ErroDoTelegram("Bot API respondeu HTTP 403")
+            return 0  # message_id desconhecido: vira incerto
+
+    resultado = _worker(repositorio, CanalComDoisDesfechos()).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO  # incerto tem prioridade sobre falhou
+    assert "HTTP 403" in resultado.motivo_do_estado
+    assert "não houve confirmação durável" in resultado.motivo_do_estado
+    assert str(CHAT) not in resultado.motivo_do_estado
+    assert str(CHAT_DO_IRMAO) not in resultado.motivo_do_estado
+
+
+def test_reagenda_pelo_instante_mais_tardio_entre_os_que_aguardam() -> None:
+    """Achado do code-review: dois destinatários com erro transitório no mesmo
+    instante — o de retry_after mais curto não pode vencer o mais longo, ou a
+    próxima tentativa bateria cedo demais no limite do segundo."""
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    canal = CanalPorDestinatario(
+        falha_para={
+            CHAT: _erro_transitorio("Bot API recusou: 429", retry_after_s=10),
+            CHAT_DO_IRMAO: _erro_transitorio("Bot API recusou: 429", retry_after_s=300),
+        }
+    )
+
+    resultado = _worker(repositorio, canal).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert resultado.proxima_tentativa == INSTANTE + timedelta(seconds=300)
+
+
+def test_erro_transitorio_a_um_destinatario_agenda_nova_tentativa_do_pedido_inteiro() -> None:
+    """Um erro transitório para um destinatário não encerra o pedido nem
+    desiste do outro: o pedido inteiro aguarda nova tentativa, com a reserva
+    preservada — mesmo que o outro destinatário já tenha recebido tudo nesta
+    mesma passada."""
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    ciclos = CiclosEmMemoria()
+    erro = _erro_transitorio("Bot API respondeu HTTP 500")
+    canal = CanalPorDestinatario(falha_para={CHAT_DO_IRMAO: erro})
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar("diaria#2026-09-07")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert resultado.frase_reservada == "bloco-1"
+    assert (CHAT, "parte um") in canal.enviados
+    assert (CHAT, "parte dois") in canal.enviados
+    assert all(chat_id != CHAT_DO_IRMAO for chat_id, _ in canal.enviados)
+
+
+class ColecaoSemSincronizacao:
+    def carregar_ativa(self) -> SnapshotPersistido | None:
+        return None
+
+    def ultima_tentativa(self) -> TentativaDeSincronizacao | None:
+        return None
+
+
+def test_status_reconhece_entrega_completa_quando_outro_destinatario_fica_incerto() -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+
+    class CanalComIncerteza:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            return 0 if chat_id == CHAT_DO_IRMAO else 901
+
+    ciclos = CiclosEmMemoria()
+    _worker(repositorio, CanalComIncerteza(), ciclos=ciclos).executar("diaria#2026-09-07")
+    ciclo_antes = ciclos.carregar()
+    pedido_antes = repositorio.pedido
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+
+    confirmado = consulta.executar()
+    incerto = replace(consulta, chat_id=CHAT_DO_IRMAO).executar()
+
+    assert confirmado.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.ENVIADO
+    assert confirmado.ultimo_envio is not None
+    assert confirmado.ultimo_envio.estado is EstadoDoPedido.ENVIADO
+    assert incerto.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.INCERTO
+    assert ciclos.carregar() == ciclo_antes
+    assert repositorio.pedido == pedido_antes
+
+
+@pytest.mark.parametrize(
+    ("resultado_proprio", "estado_esperado"),
+    [
+        ("confirmado", EstadoDoPedido.ENVIADO),
+        ("incerto", EstadoDoPedido.INCERTO),
+        ("falha", EstadoDoPedido.FALHOU),
+        ("parcial", EstadoDoPedido.PARCIAL),
+    ],
+)
+def test_status_proprio_independe_da_retentativa_do_outro(
+    resultado_proprio: str, estado_esperado: EstadoDoPedido
+) -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+
+    class CanalComRetentativa:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            if chat_id == CHAT_DO_IRMAO:
+                raise _erro_transitorio("Bot API respondeu HTTP 503")
+            if resultado_proprio == "incerto":
+                return 0
+            if resultado_proprio == "falha" or (
+                resultado_proprio == "parcial" and texto == "parte dois"
+            ):
+                raise ErroDoTelegram("Bot API respondeu HTTP 403")
+            return 901
+
+    _worker(repositorio, CanalComRetentativa()).executar("diaria#2026-09-07")
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+
+    proprio = consulta.executar()
+    outro = replace(consulta, chat_id=CHAT_DO_IRMAO).executar()
+
+    assert proprio.situacao_da_diaria_de_hoje.estado is estado_esperado
+    assert proprio.proxima_ocorrencia_diaria == datetime(2026, 9, 8, 11, tzinfo=UTC)
+    assert outro.situacao_da_diaria_de_hoje.estado is EstadoDoPedido.AGUARDANDO_TENTATIVA
+    assert outro.proxima_ocorrencia_diaria == datetime(2026, 9, 7, 11, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("falhar_na_segunda", "esperado"),
+    [(False, EstadoDoPedido.FALHOU), (True, EstadoDoPedido.PARCIAL)],
+)
+def test_retentativa_alheia_nao_converte_falha_definitiva_em_incerteza(
+    falhar_na_segunda: bool,
+    esperado: EstadoDoPedido,
+) -> None:
+    repositorio = RepositorioFalso(_diaria_compartilhada())
+    envios_proprios: list[str] = []
+
+    class CanalComFalhasMistas:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            if chat_id == CHAT_DO_IRMAO:
+                raise _erro_transitorio("Bot API respondeu HTTP 503")
+            envios_proprios.append(texto)
+            if not falhar_na_segunda or texto == "parte dois":
+                raise ErroDoTelegram("Bot API respondeu HTTP 403")
+            return 901
+
+    class RelogioDaRetentativa:
+        def agora(self) -> datetime:
+            return INSTANTE + timedelta(minutes=2)
+
+    worker = _worker(repositorio, CanalComFalhasMistas())
+    worker.executar("diaria#2026-09-07")
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+    assert consulta.executar().situacao_da_diaria_de_hoje.estado is esperado
+    envios_antes = list(envios_proprios)
+
+    replace(worker, relogio=RelogioDaRetentativa()).executar("diaria#2026-09-07")
+
+    situacao = consulta.executar().situacao_da_diaria_de_hoje
+    assert situacao.estado is esperado
+    assert situacao.tem_partes_incertas is False
+    assert envios_proprios == envios_antes
+
+
+def test_no_instante_limite_nao_inicia_nenhuma_parte() -> None:
+    pedido = replace(_pedido_pendente(), prazo=INSTANTE)
+    repositorio, canal = RepositorioFalso(pedido), CanalEspiao()
+
+    resultado = _worker(repositorio, canal).executar(pedido.identidade)
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert canal.enviados == []
+
+
+@pytest.mark.parametrize("retomada", [False, True])
+def test_incerteza_mantem_frase_consumida_com_ressalva_sem_afirmar_sucesso(
+    retomada: bool,
+) -> None:
+    pedido = _pedido_pendente()
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria()
+
+    class CanalComAmbiguidade:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            return 0
+
+    canal: CanalComAmbiguidade | CanalEspiao = CanalComAmbiguidade()
+    if retomada:
+        repositorio.pedido = replace(
+            pedido.reservar("bloco-1").iniciar_envio(),
+            partes_reservadas=UMA_FRASE.partes,
+            total_de_partes=len(UMA_FRASE.partes),
+        )
+        repositorio.incertas.append({"destinatario": CHAT, "indice": 0, "motivo": "incerta"})
+        ciclos.ciclo = ciclos.ciclo.reservar("bloco-1")
+        canal = CanalEspiao()
+
+    resultado = _worker(repositorio, canal, ciclos=ciclos).executar(pedido.identidade)
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+    assert ciclos.ciclo.reservadas == frozenset()
+    if isinstance(canal, CanalEspiao):
+        assert canal.enviados == ["parte dois"]
+
+
+@pytest.mark.parametrize("motivo_do_encerramento", ["falha_permanente", "prazo_esgotado"])
+def test_encerramento_da_retomada_preserva_incerteza_e_consumo_com_ressalva(
+    motivo_do_encerramento: str,
+) -> None:
+    pedido = _diaria_compartilhada().reservar("bloco-1").iniciar_envio()
+    if motivo_do_encerramento == "prazo_esgotado":
+        pedido = replace(pedido, prazo=INSTANTE)
+    repositorio = RepositorioFalso(pedido)
+    repositorio.incertas.append({"destinatario": CHAT, "indice": 0, "motivo": "incerta"})
+    ciclos = CiclosEmMemoria()
+    ciclos.ciclo = ciclos.ciclo.reservar("bloco-1")
+    envios: list[tuple[int, str]] = []
+
+    class CanalComFalhaPermanente:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            envios.append((chat_id, texto))
+            raise ErroDoTelegram("Bot API respondeu HTTP 403")
+
+    resultado = _worker(repositorio, CanalComFalhaPermanente(), ciclos=ciclos).executar(
+        pedido.identidade
+    )
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.INCERTO
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+    assert ciclos.ciclo.reservadas == frozenset()
+    consulta = ConsultarStatus(repositorio, ColecaoSemSincronizacao(), RelogioFixo(), CHAT)
+    assert consulta.executar().situacao_da_diaria_de_hoje.estado is EstadoDoPedido.INCERTO
+    assert (CHAT, "parte um") not in envios
+    if motivo_do_encerramento == "prazo_esgotado":
+        assert envios == []

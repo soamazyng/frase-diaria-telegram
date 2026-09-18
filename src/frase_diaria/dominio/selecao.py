@@ -1,7 +1,14 @@
+from collections.abc import Sequence
 from enum import Enum
+from typing import Protocol
 
-from frase_diaria.aplicacao.portas import Sorteio
 from frase_diaria.dominio.ciclo import Ciclo
+
+
+class Sorteio(Protocol):
+    """Gerador aleatório substituível para manter a seleção determinística em testes."""
+
+    def escolher[T](self, candidatos: Sequence[T]) -> T: ...
 
 
 class SemFrase(Enum):
