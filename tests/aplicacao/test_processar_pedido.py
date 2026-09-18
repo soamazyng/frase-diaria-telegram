@@ -623,6 +623,34 @@ def test_erro_inesperado_loga_o_tipo_da_excecao_sem_a_mensagem(
     assert not any("boto3 estourou" in mensagem for mensagem in mensagens)
 
 
+def test_erro_inesperado_do_aws_sdk_loga_o_codigo_sem_a_mensagem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`ClientError` do boto3 expõe `.response["Error"]["Code"]` — um código
+    curto e sanitizado (ex.: "ValidationException"), diferente da mensagem
+    completa, que pode ecoar detalhe da chamada. Duck typing, não import de
+    botocore: a camada de aplicação não pode depender dele (test_arquitetura.py).
+    """
+
+    class ClientErrorFalso(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("An error occurred (ValidationException) when calling PutItem")
+            self.response = {"Error": {"Code": "ValidationException", "Message": "detalhe"}}
+
+    class CanalQueQuebraComClientError:
+        def enviar_texto(self, chat_id: int, texto: str) -> int:
+            raise ClientErrorFalso()
+
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalQueQuebraComClientError()).executar("extra#42")
+
+    mensagens = [registro.message for registro in caplog.records]
+    assert any("ValidationException" in mensagem for mensagem in mensagens)
+    assert not any("PutItem" in mensagem for mensagem in mensagens)
+
+
 def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
     repositorio = RepositorioFalso(_pedido_pendente())
 

@@ -156,11 +156,18 @@ class ProcessarPedido:
             )
             return pedido
         except Exception as erro_inesperado:
-            # Só o nome da classe: mensagens de exceção podem carregar detalhe
-            # sensível (URL, corpo de resposta), mas o tipo por si só nunca
-            # carrega — e já é o suficiente para apontar onde investigar,
-            # sem precisar reproduzir o incidente a partir do zero de novo.
-            _log.error("falha inesperada (%s) ao processar pedido", type(erro_inesperado).__name__)
+            # Só o nome da classe e, quando existir, o código de erro do AWS
+            # SDK (duck typing — importar botocore aqui violaria a fronteira
+            # de `test_arquitetura.py`): nenhum dos dois carrega detalhe
+            # sensível, ao contrário da mensagem completa (pode embutir corpo
+            # de resposta), mas já bastam pra apontar onde investigar sem
+            # precisar reproduzir o incidente a partir do zero de novo.
+            codigo_aws = getattr(erro_inesperado, "response", {}).get("Error", {}).get("Code")
+            _log.error(
+                "falha inesperada (%s%s) ao processar pedido",
+                type(erro_inesperado).__name__,
+                f", código AWS {codigo_aws}" if codigo_aws else "",
+            )
             self.repositorio.finalizar_tentativa(
                 pedido.identidade, sequencial, "erro", "erro de integração", self.relogio.agora()
             )
