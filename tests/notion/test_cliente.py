@@ -5,6 +5,7 @@ Telegram (`telegram/canal.py`) — nunca repetir o cabeçalho de autenticação 
 o corpo bruto da resposta.
 """
 
+import http.client
 import json
 import urllib.error
 from email.message import Message
@@ -114,6 +115,42 @@ def test_erro_http_nao_vaza_o_token_na_excecao(monkeypatch: pytest.MonkeyPatch) 
         raise urllib.error.HTTPError(
             url=requisicao.full_url, code=401, msg="Unauthorized", hdrs=Message(), fp=None
         )
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    with pytest.raises(ErroDoNotion) as capturado:
+        ClienteNotionHttp(token=TOKEN).buscar_filhos("pagina-1")
+
+    assert TOKEN not in str(capturado.value)
+
+
+def test_falha_de_rede_vira_erro_do_notion_sem_vazar_o_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        raise urllib.error.URLError(f"falha ao conectar em {requisicao.full_url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
+
+    with pytest.raises(ErroDoNotion) as capturado:
+        ClienteNotionHttp(token=TOKEN).buscar_filhos("pagina-1")
+
+    assert TOKEN not in str(capturado.value)
+
+
+def test_conexao_encerrada_sem_resposta_tambem_vira_erro_do_notion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regressão: mesma falha de transporte já corrigida em telegram/canal.py.
+
+    `urllib` nem sempre embrulha em `URLError` — `RemoteDisconnected` foi
+    observada em produção do lado do Telegram. Sem este tratamento aqui
+    também, a mesma classe de falha do lado do Notion escaparia como exceção
+    crua, pulando o fallback para o snapshot em cache (AC09).
+    """
+
+    def urlopen_falso(requisicao, timeout=None):  # type: ignore[no-untyped-def]
+        raise http.client.RemoteDisconnected("conexão encerrada")
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen_falso)
 
