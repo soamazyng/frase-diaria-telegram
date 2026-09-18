@@ -33,7 +33,10 @@ operacional; detalhes de produto, incidentes e justificativas permanecem nas fon
   são aditivas e compatíveis; retenção, proteção contra exclusão e recuperação pontual não podem
   ser enfraquecidas sem uma decisão explícita.
 - Este projeto tem um único ambiente de produção. Não publique, registre webhook, altere segredos
-  nem crie/remova recursos AWS sem autorização explícita na tarefa atual.
+  nem crie/remova recursos AWS sem autorização explícita na tarefa atual. **`git push` para
+  `develop` já é publicar**: o workflow `pr-develop-main.yml` dispara nesse push e publica em
+  produção sozinho, sem exigir `make publicar-app` manual — a mesma autorização explícita vale
+  para o push, não só para o comando de publicação.
 
 ## Desenvolvimento e verificação
 
