@@ -16,7 +16,12 @@ from frase_diaria.aplicacao.portas import (
 )
 from frase_diaria.dominio.ciclo import Ciclo
 from frase_diaria.dominio.frase import Frase
-from frase_diaria.dominio.pedido import EstadoDoPedido, Pedido
+from frase_diaria.dominio.pedido import (
+    MOTIVO_JANELA_ENCERRADA,
+    MOTIVO_TENTATIVA_UNICA_ESGOTADA,
+    EstadoDoPedido,
+    Pedido,
+)
 from frase_diaria.dominio.selecao import SemFrase, Sorteio, selecionar
 
 _log = logging.getLogger(__name__)
@@ -166,13 +171,13 @@ class ProcessarPedido:
 
     def _processar(self, pedido: Pedido, sequencial: int) -> Pedido:
         ciclo, versao_ciclo = self.ciclos.carregar()
+        contexto = ContextoDoEncerramento(ciclo, versao_ciclo, sequencial)
         retomada_suspensa = self.entregador.suspender_retomada_sem_snapshot(pedido, sequencial)
         if retomada_suspensa is not None:
-            return self.encerrador.marcar_incerto(
-                ContextoDoEncerramento(ciclo, versao_ciclo, sequencial),
-                pedido,
-                retomada_suspensa.motivo,
-            )
+            return self.encerrador.marcar_incerto(contexto, pedido, retomada_suspensa.motivo)
+        motivo_do_esgotamento = self._motivo_se_esgotado(pedido, sequencial)
+        if motivo_do_esgotamento is not None:
+            return self.encerrador.expirar(contexto, pedido, motivo_do_esgotamento)
         escolha = self._escolher(pedido, ciclo)
 
         if escolha is SemFrase.AGUARDANDO_RESERVA:
@@ -183,9 +188,7 @@ class ProcessarPedido:
             self.repositorio.salvar(pedido.aguardar_tentativa(motivo), sequencial)
             raise ReservaPendente(motivo)
         if escolha is SemFrase.COLECAO_VAZIA:
-            return self.encerrador.sem_conteudo(
-                ContextoDoEncerramento(ciclo, versao_ciclo, sequencial), pedido
-            )
+            return self.encerrador.sem_conteudo(contexto, pedido)
 
         frase, ciclo = escolha
         pedido_para_reservar = pedido
@@ -245,6 +248,23 @@ class ProcessarPedido:
             ContextoDoEncerramento(ciclo, versao_ciclo, sequencial),
             entrega,
         )
+
+    def _motivo_se_esgotado(self, pedido: Pedido, sequencial: int) -> str | None:
+        """Motivo de encerramento se não há mais chance de nova tentativa, senão `None`.
+
+        `EntregadorDePedido` já respeita prazo e tentativa única, mas só
+        dentro do envio de cada parte. Uma falha ANTES da entrega — na
+        sincronização com o Notion, por exemplo — nunca alcança essa checagem,
+        então sem esta aqui um pedido assim retenta para sempre: achado real
+        de produção, um `/frase` com 836 tentativas ao longo de mais de um dia,
+        muito além do prazo. `sequencial == 1` é sempre a primeira tentativa
+        (spec, 4.5: a tentativa única precisa rodar, cedo ou tarde).
+        """
+        if pedido.prazo_vencido(self.relogio.agora()):
+            return MOTIVO_JANELA_ENCERRADA
+        if pedido.tentativa_unica and sequencial > 1:
+            return MOTIVO_TENTATIVA_UNICA_ESGOTADA
+        return None
 
     def _escolher(self, pedido: Pedido, ciclo: Ciclo) -> tuple[Frase, Ciclo] | SemFrase:
         """Decide qual frase entregar, respeitando o ciclo.

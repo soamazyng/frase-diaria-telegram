@@ -18,7 +18,7 @@ from frase_diaria.aplicacao.portas import (
     TentativaDeParte,
 )
 from frase_diaria.dominio.frase import Frase
-from frase_diaria.dominio.pedido import Pedido
+from frase_diaria.dominio.pedido import MOTIVO_JANELA_ENCERRADA, Pedido
 
 
 class RepositorioDeEntrega(Protocol):
@@ -225,9 +225,9 @@ class EntregadorDePedido:
         self, tentativa: _TentativaDeEntrega, indice: int, texto: str
     ) -> _ResultadoDoDestinatario:
         pedido = tentativa.pedido
-        if pedido.prazo is not None and self.relogio.agora() >= pedido.prazo:
+        if pedido.prazo_vencido(self.relogio.agora()):
             return _ResultadoDoDestinatario(
-                DesfechoDaEntrega.JANELA_ESGOTADA, "janela de recuperação encerrada"
+                DesfechoDaEntrega.JANELA_ESGOTADA, MOTIVO_JANELA_ENCERRADA
             )
         intencoes = self.repositorio.indices_intencoes(pedido.identidade, tentativa.destinatario)
         if indice in intencoes:
@@ -292,7 +292,7 @@ class EntregadorDePedido:
         if (
             erro.transitorio
             and not pedido.tentativa_unica
-            and (pedido.prazo is None or self.relogio.agora() < pedido.prazo)
+            and not pedido.prazo_vencido(self.relogio.agora())
         ):
             proximo = self._proximo_instante_de_tentativa(tentativa.sequencial, erro.retry_after_s)
             return _ResultadoDoDestinatario(DesfechoDaEntrega.AGUARDANDO, str(erro), proximo)

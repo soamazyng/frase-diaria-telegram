@@ -9,7 +9,7 @@ from frase_diaria.aplicacao.diagnostico import erro_sanitizado
 from frase_diaria.aplicacao.entregar_pedido import DesfechoDaEntrega, ResultadoDaEntrega
 from frase_diaria.aplicacao.portas import ConflitoDeConcorrencia
 from frase_diaria.dominio.ciclo import Ciclo
-from frase_diaria.dominio.pedido import Pedido
+from frase_diaria.dominio.pedido import MOTIVO_JANELA_ENCERRADA, Pedido
 
 _log = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class EncerrarPedido:
         pedido = entrega.pedido
         match entrega.desfecho:
             case DesfechoDaEntrega.JANELA_ESGOTADA:
-                return self._expirar(contexto, pedido)
+                return self.expirar(contexto, pedido, MOTIVO_JANELA_ENCERRADA)
             case DesfechoDaEntrega.AGUARDANDO:
                 assert entrega.proxima_tentativa is not None
                 reagendado = pedido.aguardar_tentativa(
@@ -105,8 +105,12 @@ class EncerrarPedido:
                 self._liberar(contexto, pedido.frase_reservada)
         return encerrado
 
-    def _expirar(self, contexto: ContextoDoEncerramento, pedido: Pedido) -> Pedido:
-        motivo = "janela de recuperação encerrada"
+    def expirar(self, contexto: ContextoDoEncerramento, pedido: Pedido, motivo: str) -> Pedido:
+        """Abandona um pedido que não tem mais chance de nova tentativa.
+
+        Público porque também é chamado fora de `apos_entrega`, por quem
+        decide isso antes da entrega — ver `ProcessarPedido._motivo_se_esgotado`.
+        """
         if self._tem_incerteza(pedido):
             return self.marcar_incerto(contexto, pedido, motivo)
         houve_confirmacao = self._houve_confirmacao(pedido)

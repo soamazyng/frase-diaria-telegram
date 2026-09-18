@@ -80,6 +80,8 @@ MOTIVO_PADRAO = "pedido criado"
 MOTIVO_FRASE_RESERVADA = "frase reservada"
 MOTIVO_ENVIO_INICIADO = "envio iniciado"
 MOTIVO_TODAS_AS_PARTES_CONFIRMADAS = "todas as partes confirmadas"
+MOTIVO_JANELA_ENCERRADA = "janela de recuperação encerrada"
+MOTIVO_TENTATIVA_UNICA_ESGOTADA = "tentativa única já realizada sem sucesso"
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,15 @@ class Pedido:
     def identidade_de_tentativa(pedido: str, sequencial: int) -> str:
         """Identidade de uma tentativa dentro de seu pedido."""
         return f"{pedido}#tentativa#{sequencial}"
+
+    def prazo_vencido(self, agora: datetime) -> bool:
+        """Se a janela de recuperação já passou — `prazo=None` nunca vence.
+
+        Compartilhado por quem precisa comparar contra o prazo: o envio de
+        cada parte (`EntregadorDePedido`) e a escolha da frase, que roda antes
+        dele e pode falhar de um jeito que nunca chega lá (`ProcessarPedido`).
+        """
+        return self.prazo is not None and agora >= self.prazo
 
     def _transicionar(
         self,

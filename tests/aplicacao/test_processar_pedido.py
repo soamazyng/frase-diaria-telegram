@@ -617,6 +617,100 @@ def test_erro_inesperado_nao_deixa_o_pedido_em_estado_terminal() -> None:
     assert not repositorio.pedido.estado.terminal
 
 
+class FonteQueQuebra:
+    def __init__(self) -> None:
+        self.chamadas = 0
+
+    def listar(self) -> tuple[Frase, ...]:
+        self.chamadas += 1
+        raise RuntimeError("Notion instável")
+
+
+def test_erro_inesperado_antes_da_entrega_expira_o_pedido_com_prazo_vencido() -> None:
+    """Regressão de incidente real: um /frase falhando na sincronização com o
+    Notion (antes de qualquer tentativa de entrega) nunca era comparado ao
+    prazo — só `EntregadorDePedido` checava isso, e ela nunca era alcançada.
+    O pedido reconciliado a cada 5 min por mais de um dia inteiro, com
+    centenas de tentativas, todas registrando o mesmo "erro de integração".
+    """
+    pedido = replace(_pedido_pendente().reservar("bloco-1"), prazo=INSTANTE - timedelta(minutes=1))
+    repositorio = RepositorioFalso(pedido)
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+    fonte = FonteQueQuebra()
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=fonte, ciclos=ciclos).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert fonte.chamadas == 0  # nunca tenta sincronizar um pedido já vencido
+    assert ciclos.ciclo.reservadas == frozenset()
+
+
+def test_erro_inesperado_na_fonte_antes_do_prazo_continua_propagando() -> None:
+    """Não regredir: na primeira tentativa, sem prazo vencido, a falha antes
+    da entrega ainda propaga para que a Lambda (ou o reconciliador) retente —
+    só o prazo, ou uma tentativa única já gasta, encerra o pedido cedo.
+    """
+    repositorio = RepositorioFalso(_pedido_pendente())
+
+    with pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalEspiao(), fonte=FonteQueQuebra()).executar("extra#42")
+
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+
+
+def test_erro_inesperado_antes_da_entrega_com_prazo_vencido_e_parte_confirmada_vira_parcial() -> (
+    None
+):
+    """`EncerrarPedido.expirar` decide entre EXPIRADO e PARCIAL a partir do que
+    já foi confirmado — este é o caminho de retomada (uma parte já entregue
+    numa tentativa anterior) encontrando o mesmo erro pré-entrega mascarado.
+    """
+    pedido = replace(
+        _pedido_pendente().reservar("bloco-1").iniciar_envio(),
+        prazo=INSTANTE - timedelta(minutes=1),
+    )
+    repositorio = RepositorioFalso(pedido)
+    repositorio.partes.append(
+        {"destinatario": CHAT, "indice": 0, "texto": "parte um", "message_id": 901}
+    )
+    ciclos = CiclosEmMemoria(Ciclo.primeiro().reservar("bloco-1"))
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=FonteQueQuebra(), ciclos=ciclos).executar(
+        "extra#42"
+    )
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.PARCIAL
+    assert resultado.frase_reservada == "bloco-1"
+    assert ciclos.ciclo.consumidas_com_ressalva == frozenset({"bloco-1"})
+
+
+def test_extra_de_tentativa_unica_com_erro_pre_entrega_encerra_na_segunda_tentativa() -> None:
+    """Um extra de tentativa única (criado após o meio-dia local) não tem
+    `prazo` — a política é "sem retentativa alguma", não "sem limite de tempo"
+    (dominio/tempo.py::PoliticaDeExtra). A primeira tentativa ainda precisa
+    rodar de verdade (spec, 4.5: "cedo ou tarde"), então um erro pré-entrega
+    nela ainda propaga; mas a segunda não pode repetir para sempre.
+    """
+    pedido = replace(_pedido_pendente(), prazo=None, tentativa_unica=True)
+    repositorio = RepositorioFalso(pedido)
+    fonte = FonteQueQuebra()
+
+    with pytest.raises(RuntimeError, match="processamento interrompido"):
+        _worker(repositorio, CanalEspiao(), fonte=fonte).executar("extra#42")
+    assert repositorio.pedido is not None
+    assert not repositorio.pedido.estado.terminal
+    assert fonte.chamadas == 1
+
+    resultado = _worker(repositorio, CanalEspiao(), fonte=fonte).executar("extra#42")
+
+    assert resultado is not None
+    assert resultado.estado is EstadoDoPedido.EXPIRADO
+    assert fonte.chamadas == 1  # a segunda tentativa nem chega a sincronizar
+
+
 # --- frase que sumiu da fonte ------------------------------------------------
 
 
