@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Lease, escritas condicionais e concorrência.
 
-**Status:** concluído em 2026-09-08 — ver `docs/14-envio-diario-retentativas-e-janela.md`
+**Status:** concluído em 2026-09-08 — ver `ia_docs/14-envio-diario-retentativas-e-janela.md`
 
 - [x] Um disparo agendado cria o pedido diário; relógio local entre 08:00 e 08:15 em dia normal produz uma diária, e fins de semana seguem a mesma regra (AC01).
 - [x] Um segundo disparo periódico recupera pedidos pendentes e execuções interrompidas, e pode criar a diária ausente dentro da janela quando o disparo principal falhar.

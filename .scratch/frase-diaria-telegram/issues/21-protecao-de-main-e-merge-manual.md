@@ -5,7 +5,7 @@
 **Blocked by:** 18 — Pipeline vinculado ao SHA e publicação serializada; 20 — Reconciliador de publicações e compatibilidade de dados.
 
 **Status:** concluído em 2026-09-09 — ver
-`docs/21-protecao-de-main-e-merge-manual.md`.
+`ia_docs/21-protecao-de-main-e-merge-manual.md`.
 
 - [x] `main` protegida contra push direto, exigindo o conjunto de checks obrigatórios, incluindo a publicação validada. *(branch protection real via API, 5 checks obrigatórios exatos do ticket 18 + GitGuardian)*
 - [x] Caminhos de bypass desabilitados quando aplicável. *(`enforce_admins: true`, `allow_force_pushes`/`allow_deletions: false`; bypass por ator não existe no plano Pro, não aplicável)*

@@ -11,7 +11,7 @@ name: Reconciliador de publicações
 # implantação fica "em andamento" para sempre), ou o PR develop -> main foi
 # fechado sem merge e a recuperação síncrona do ticket 19 nunca rodou (ela
 # só dispara dentro do próprio job de publicação, não por um evento de
-# fechamento de PR — ver docs/19, "Próximo passo").
+# fechamento de PR — ver ia_docs/19, "Próximo passo").
 on:
   schedule:
     - cron: "0 * * * *"
@@ -100,7 +100,7 @@ jobs:
       - name: Avaliar se a versão ativa precisa reconciliar para a estável
         id: avaliar
         # "Fechamento de PR sem merge... restaura a versão estável anterior
-        # ao PR" (AC25, adiado do ticket 19 — ver docs/19). Sem PR aberto
+        # ao PR" (AC25, adiado do ticket 19 — ver ia_docs/19). Sem PR aberto
         # develop -> main, a versão publicada deveria ser exatamente o HEAD
         # de main; qualquer diferença é candidata abandonada (PR fechado
         # sem merge) ou publicação nunca sincronizada. Com PR aberto, a
@@ -119,7 +119,7 @@ jobs:
           # "Versão estável" não é o HEAD literal de main: a spec (4.11)
           # propõe merge commit preservando o histórico de dev, e um commit
           # de merge nunca passa pelo pipeline — nenhum artefato existe para
-          # ele. Achado ao vivo em 2026-09-08 (ver docs/20): a primeira
+          # ele. Achado ao vivo em 2026-09-08 (ver ia_docs/20): a primeira
           # execução real deste passo, logo após o merge do PR #2, tratou o
           # commit de merge como candidata abandonada por esse motivo.
           # Quando o HEAD de main tem dois parents (é um commit de merge),

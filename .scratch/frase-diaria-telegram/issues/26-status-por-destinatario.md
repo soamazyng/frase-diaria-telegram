@@ -7,7 +7,7 @@ situação dele com a de outro destinatário.
 **Blocked by:** 25 — Diária com múltiplos destinatários: entrega compartilhada e falhas
 independentes.
 
-**Status:** concluído em 2026-09-16 — ver `docs/26-status-por-destinatario.md`
+**Status:** concluído em 2026-09-16 — ver `ia_docs/26-status-por-destinatario.md`
 
 - [x] `ConsultarStatus` / `RelatorioDeStatus` derivam a situação da diária de hoje a
       partir das partes confirmadas/incertas do destinatário que perguntou, não do

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Publicação manual em SAM: /health vivo na AWS.
 
-**Status:** concluído em 2026-09-07 — ver `docs/04-webhook-telegram.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/04-webhook-telegram.md`
 
 - [x] O webhook valida o cabeçalho de segredo do Telegram, o tipo de conversa privada e o chat_id autorizado, nessa ordem.
 - [x] `/start` responde a ajuda de primeiro uso citando `/frase` e `/status`, sem consumir frase e sem alterar qualquer ciclo.

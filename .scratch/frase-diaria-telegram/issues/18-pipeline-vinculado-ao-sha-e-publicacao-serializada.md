@@ -5,7 +5,7 @@
 **Blocked by:** 03 — Publicação manual em SAM: /health vivo na AWS; 17 — PR automático develop → main.
 
 **Status:** concluído em 2026-09-08 — ver
-`docs/18-pipeline-vinculado-ao-sha-e-publicacao-serializada.md`.
+`ia_docs/18-pipeline-vinculado-ao-sha-e-publicacao-serializada.md`.
 
 - [x] O SHA imutável do push é capturado e o PR correspondente é localizado.
 - [x] Testes, análise estática e validação SAM rodam contra esse SHA; qualquer falha impede a publicação e deixa o merge bloqueado (AC20).

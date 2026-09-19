@@ -4,7 +4,7 @@
 
 **Blocked by:** 11 — Snapshot durável, cache e fallback do Notion; 14 — Envio diário, retentativas e janela até 12:00.
 
-**Status:** concluído em 2026-09-08 — ver `docs/15-status-completo.md`
+**Status:** concluído em 2026-09-08 — ver `ia_docs/15-status-completo.md`
 
 - [x] `/status` passa pela mesma autenticação do webhook.
 - [x] A resposta traz último envio confirmado, próxima ocorrência diária, situação da diária atual, última sincronização válida, última tentativa de sincronização, uso de cache e falhas ativas ou última falha.

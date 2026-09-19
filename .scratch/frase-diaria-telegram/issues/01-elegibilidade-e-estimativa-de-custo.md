@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** concluído em 2026-09-07 — documento em `docs/01-custo-e-elegibilidade.md`
+**Status:** concluído em 2026-09-07 — documento em `ia_docs/01-custo-e-elegibilidade.md`
 
 - [x] Conta AWS (<AWS_ACCOUNT_ID>), região (us-east-1) e identidade para bootstrap (`user/aws-developer-group`, com permissões verificadas) confirmadas e registradas.
 - [x] Elegibilidade de franquias verificada item a item, e confirmada na conta real via `freetier:GetFreeTierUsage` (só Always Free): API Gateway HTTP API, Lambda, DynamoDB e índices, S3 e requisições, EventBridge Scheduler, CloudWatch Logs, armazenamento de segredos e KMS, tráfego de saída.

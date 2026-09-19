@@ -255,7 +255,7 @@ jobs:
           # merge commit preservando o histórico de dev, e um commit de
           # merge nunca passa pelo pipeline — comparar contra ele quebra
           # sempre que um PR é mergeado (achado ao vivo em 2026-09-08, ver
-          # docs/20). Quando o HEAD de main tem dois parents (é um commit
+          # ia_docs/20). Quando o HEAD de main tem dois parents (é um commit
           # de merge), o segundo parent é a ponta de develop realmente
           # testada e incorporada; é contra ela que develop precisa
           # continuar à frente ou igual.

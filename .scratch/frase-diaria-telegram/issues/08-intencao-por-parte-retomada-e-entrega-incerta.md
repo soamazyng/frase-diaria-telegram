@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Pedidos: identidades estáveis e máquina de estados.
 
-**Status:** concluído em 2026-09-07 — ver `docs/08-intencao-por-parte-retomada-e-entrega-incerta.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/08-intencao-por-parte-retomada-e-entrega-incerta.md`
 
 - [x] A intenção de envio é registrada por parte antes da chamada ao Telegram; a confirmação e o message_id são persistidos depois.
 - [x] Reinício após a reserva, após o envio e durante a confirmação não perde histórico; intenção sem confirmação resulta em estado incerto (AC15).

@@ -5,7 +5,7 @@
 **Blocked by:** 19 — Recuperação da versão anterior, caso a caso.
 
 **Status:** concluído em 2026-09-08 — ver
-`docs/20-reconciliador-de-publicacoes-e-dados.md`. Exercitado ao vivo após
+`ia_docs/20-reconciliador-de-publicacoes-e-dados.md`. Exercitado ao vivo após
 o merge do PR #2: claim `sub` do OIDC confirmado contra token real, passo
 de debug removido, caminho "implantação travada" exercitado sem
 incidente. O caminho "reconciliar para a versão estável" revelou um
@@ -24,4 +24,4 @@ contra o segundo parent do commit de merge em vez do HEAD literal) — ver
 - [x] Atualização e recuperação preservam histórico e compatibilidade dos dados (AC26). *(garantido pela separação de stacks já existente desde o ticket 03 — a stack de aplicação nunca importa nem exporta nada que permita tocar a stack de dados; nenhuma lógica nova neste ticket mexe em dados)*
 - [x] Mudanças de dados são aditivas e legíveis pela versão anterior; nenhuma migração destrutiva entra no MVP. *(nenhuma migração de dados existe neste ticket nem em nenhum anterior — invariante arquitetural a respeitar em tickets futuros que toquem dados, não algo a implementar aqui)*
 - [x] O histórico não volta no tempo e mensagens já enviadas permanecem no Telegram, mesmo após recuperação. *(republicar código nunca toca o DynamoDB nem desfaz envios; consequência direta de a recuperação/reconciliação só trocar o artefato deployado)*
-- [x] O custo da execução periódica entra na estimativa registrada no ticket 01 (`docs/01-custo-e-elegibilidade.md`, seção 4).
+- [x] O custo da execução periódica entra na estimativa registrada no ticket 01 (`ia_docs/01-custo-e-elegibilidade.md`, seção 4).

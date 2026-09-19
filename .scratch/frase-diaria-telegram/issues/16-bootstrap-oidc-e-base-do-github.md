@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Elegibilidade e estimativa de custo AWS/GitHub.
 
-**Status:** concluído em 2026-09-08 — ver `docs/16-bootstrap-oidc-e-base-do-github.md`
+**Status:** concluído em 2026-09-08 — ver `ia_docs/16-bootstrap-oidc-e-base-do-github.md`
 
 - [x] Configuração de bootstrap declarativa, com instrução de execução única a partir de uma identidade AWS já autorizada.
 - [x] Confiança OIDC restrita a proprietário e repositório, com audience e subject validados e contexto de execução autorizado (AC28).

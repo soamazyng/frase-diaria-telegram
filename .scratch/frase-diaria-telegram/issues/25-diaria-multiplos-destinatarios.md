@@ -7,7 +7,7 @@ destinatário não impede nem atrasa a entrega aos demais, e não trava o pedido
 
 **Blocked by:** 24 — Autorização e comandos reconhecem múltiplos destinatários.
 
-**Status:** concluído em 2026-09-15 — ver `docs/25-diaria-multiplos-destinatarios.md`
+**Status:** concluído em 2026-09-15 — ver `ia_docs/25-diaria-multiplos-destinatarios.md`
 
 - [x] `Pedido.chat_id` (destinatário único) dá lugar a `Pedido.destinatarios` (um ou
       mais); um extra continua com exatamente um destinatário — quem pediu.

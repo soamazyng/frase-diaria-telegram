@@ -9,7 +9,7 @@ aos módulos profundos.
 
 **Blocked by:** 28 — Extrair a entrega por destinatário para um módulo profundo.
 
-**Status:** concluído em 2026-09-16 — ver `docs/29-encapsular-encerramento-e-ciclo.md`
+**Status:** concluído em 2026-09-16 — ver `ia_docs/29-encapsular-encerramento-e-ciclo.md`
 
 - [x] O módulo de encerramento recebe um contexto tipado do pedido reservado e o resultado
       da entrega, escondendo do coordenador as combinações de estado final e mutação do ciclo.
