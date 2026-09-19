@@ -47,7 +47,7 @@ conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
-`telegram-chat-ids` (v2, `.scratch/v2-telegram-bot.md` — lista de destinatários
+`telegram-chat-ids` (spec, 4.6.1 — lista de destinatários
 autorizados separados por vírgula; inclui pelo menos `<TELEGRAM_CHAT_ID_PRINCIPAL>`, a conversa
 da usuária; o id do bot é <TELEGRAM_BOT_ID> e não serve), `webhook-secret`,
 `notion-token` (integração interna, capacidade só de leitura de conteúdo;

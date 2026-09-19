@@ -1,16 +1,21 @@
 # Spec — Frase Diária no Telegram
 
-Versão: 1.0  
-Estado: refino funcional aprovado; implementação não iniciada.  
-Triagem sugerida: ready-for-agent — indicação documental, sem label aplicada a um rastreador.  
-Repositório previsto: frase-diaria-telegram, privado.  
+Estado: implementado e em produção — entrega diária, comandos e múltiplos destinatários operacionais.  
+Repositório: frase-diaria-telegram, privado.  
 Responsável pelo produto e merge: Jay.
+
+Esta é a fonte de verdade única e viva do sistema: toda extensão aprovada é fundida
+diretamente aqui, nunca mantida como um documento concorrente. A seção "Notas
+adicionais" registra o histórico de extensões já fundidas, cada uma com o link
+para o documento arquivado que preserva a decisão original por inteiro.
 
 ## 1. Problema — Problem Statement
 
 Minha coleção de frases está no Notion, mas depende de consulta manual para fazer parte da rotina. Quero receber esse conteúdo no Telegram e usar o projeto para praticar desenvolvimento de software com IA, com dedicação inferior a duas horas semanais.
 
 O sinal de valor será identificar, após duas semanas de uso, pelo menos duas frases que provocaram reflexão ou ação. Essa avaliação é pessoal; não exige funcionalidade de feedback no bot.
+
+A usuária também compartilha a frase diária com o irmão dela, que passou a receber as mesmas entregas como um destinatário autorizado adicional — a mesma frase, sorteada uma única vez, entregue a um pequeno conjunto fixo de destinatários em vez de a uma única conversa.
 
 ### Fontes e precedência
 
@@ -42,7 +47,8 @@ A usuária pode pedir outra frase com /frase e consultar a operação com /statu
 - **Entrega incerta:** a chamada pode ter produzido mensagem, mas não há confirmação durável.
 - **Versão estável:** publicação verificada e aceita por merge.
 - **Versão candidata:** publicação de um PR ainda aberto.
-- **Destinatário** (v2): uma conversa privada autorizada a receber entregas do bot. Até a v2 existia exatamente um; a partir da v2 existe um conjunto pequeno e fixo, configurado pela usuária. "Conversa autorizada", usado no restante desta spec, passa a significar "pertence ao conjunto de destinatários autorizados", não mais "é o único chat_id configurado". Ver `.scratch/v2-telegram-bot.md`.
+- **Destinatário:** uma conversa privada autorizada a receber entregas do bot — um conjunto pequeno e fixo, configurado pela usuária. "Conversa autorizada", usado no restante desta spec, significa "pertence ao conjunto de destinatários autorizados".
+- **Entrega ao destinatário:** o envio (bem-sucedido, incerto ou falho) de uma parte de uma frase a um destinatário específico dentro de um pedido. Um mesmo pedido de envio diário produz uma entrega por destinatário; o resultado de uma não determina o resultado das outras.
 
 ## 3. Histórias de usuário — User Stories
 
@@ -88,6 +94,22 @@ A usuária pode pedir outra frase com /frase e consultar a operação com /statu
 40. Como desenvolvedora, quero restaurar a versão anterior após falhas ou abandono do PR, para recuperar o serviço.
 41. Como desenvolvedora, quero preservar dados e histórico na recuperação, para manter a continuidade.
 42. Como desenvolvedora, quero acompanhar consumo AWS e GitHub Actions, para perseguir a meta de custo recorrente zero.
+43. Como usuária, quero que meu irmão receba a mesma frase diária que eu, para compartilharmos a mesma experiência.
+44. Como usuária, quero que a frase do dia seja sorteada uma única vez e enviada a todos os destinatários, para que todos recebam exatamente o mesmo conteúdo no mesmo dia.
+45. Como usuária, quero que a entrega a um destinatário não dependa da entrega aos demais, para que um problema de entrega a um de nós não afete o outro.
+46. Como destinatário adicional, quero poder pedir /frase para receber uma frase extra, para ter a mesma experiência que a usuária já tem.
+47. Como destinatário adicional, quero poder consultar /status, para saber se recebi a frase de hoje e diagnosticar problemas na minha própria entrega.
+48. Como destinatário adicional, quero receber /start com a mesma ajuda que a usuária recebe, para entender como usar o bot sem precisar perguntar a ela.
+49. Como usuária, quero que uma frase extra pedida por outro destinatário seja só dele, para que /frase continue sendo uma solicitação pessoal e não dispare uma entrega para todo mundo.
+50. Como usuária, quero que o sorteio sem repetição (ciclo) continue valendo para o conjunto compartilhado de frases entregues, para não regredir a garantia que já existe hoje de nunca repetir uma frase dentro do mesmo ciclo.
+51. Como usuária, quero que uma frase já consumida por um pedido de vários destinatários seja contabilizada uma única vez no ciclo, para que ter mais de um destinatário não esgote a coleção mais rápido.
+52. Como usuária, quero que conversas fora do conjunto de destinatários continuem sendo recusadas silenciosamente, para manter o bot privado entre eu e as pessoas que eu autorizar.
+53. Como usuária, quero cadastrar o chat_id de um novo destinatário como segredo, fora do Git e fora da conversa com o agente, para manter a mesma disciplina de segredos que o projeto já segue.
+54. Como usuária, quero que adicionar um destinatário não exija mudança de permissão de infraestrutura (IAM), para manter o custo e a superfície de mudança pequenos.
+55. Como desenvolvedora, quero que pedidos diários já existentes no formato anterior (um destinatário só) continuem legíveis como histórico, para não perder nem corromper dados já gravados na tabela `Retain`.
+56. Como desenvolvedora, quero um teste que force deliberadamente a falha de entrega a um destinatário enquanto os demais recebem normalmente, para provar que as entregas são de fato independentes.
+57. Como desenvolvedora, quero um teste que prove que a frase é consumida uma única vez no ciclo mesmo havendo múltiplos destinatários, para proteger a invariante de sorteio sem repetição.
+58. Como usuária, quero que /status de cada destinatário relate a entrega dele mesmo (recebeu, não recebeu, incerta), não um agregado que misture a situação de um destinatário com a de outro.
 
 ## 4. Decisões de implementação — Implementation Decisions
 
@@ -169,6 +191,23 @@ Usar escritas condicionais e transações para reservar pedido e frase. Proteger
 O banco e a chamada externa ao Telegram não participam da mesma transação. Timeout após aceitação, ou interrupção antes de persistir a resposta, pode deixar a entrega incerta. A spec não promete exatamente uma mensagem sob todas as falhas de rede.
 
 Proposta técnica: registrar intenção por parte antes do envio; diante de resultado ambíguo, marcar entrega incerta e suspender reenvio automático dessa parte. Expor a situação em /status. Se houver sucesso externo conhecido mas persistência temporariamente indisponível, tentar persistir a confirmação sem reenviar. Essa escolha reduz duplicação, com risco explícito de uma entrega perdida; precisa ser validada antes da implementação da confiabilidade.
+
+### 4.6.1 Múltiplos destinatários
+
+O bot reconhece um conjunto pequeno e fixo de destinatários autorizados em vez de um único. Todo dia, a mesma frase sorteada — uma única vez — é entregue a todos os destinatários; não frases diferentes por pessoa. Qualquer destinatário autorizado pode usar /frase (extra, só para ele) e /status (diagnóstico da própria entrega). A falha ao entregar a um destinatário não impede nem atrasa a entrega aos demais.
+
+- **Autorização:** a política de acesso passa a checar pertencimento a um conjunto de chat_ids autorizados, em vez de igualdade com um único chat_id. A ordem de verificação (segredo antes de conversa, comparação em tempo constante) não muda.
+- **Pedido:** um pedido carrega uma tupla não vazia de destinatários. Um extra (/frase) sempre tem exatamente um — quem pediu. A diária carrega todos os destinatários autorizados no momento em que o pedido é criado.
+- **Identidade da diária:** um único pedido diário por dia local, para todo o conjunto de destinatários — não um pedido por pessoa. Identidades do formato anterior (por chat_id) permanecem como histórico, sem serem reprocessadas.
+- **Reserva e consumo de frase:** acontecem uma única vez por pedido, independentemente de quantos destinatários ele tenha. Não há reserva nem consumo por destinatário — a garantia de sorteio sem repetição do ciclo é sobre pedidos, não sobre entregas individuais.
+- **Entrega e rastreio de partes:** a entrega itera destinatário × índice da parte. Cada combinação destinatário + parte confirma, fica incerta ou falha de forma independente das demais; a identidade de uma parte incorpora o destinatário.
+- **Estado agregado do pedido:** reflete o pior caso entre destinatários — um pedido só é considerado entregue quando todos os destinatários confirmaram todas as partes. Uma falha permanente para um destinatário não impede que os demais sejam tentados; o worker avança para os outros antes de decidir o desfecho do pedido.
+- **/status por destinatário:** a resposta a um destinatário deriva da entrega daquele destinatário dentro do pedido do dia, não do estado agregado do pedido — para não relatar "parcial" a quem de fato recebeu tudo.
+- **Extras:** sem mudança de desenho — a identidade já é por bot + update_id, e o destinatário já vem da própria mensagem recebida. Autorizar um chat_id adicional já basta para que /frase funcione para ele.
+- **Compatibilidade de leitura:** um pedido persistido sem destinatários explícitos (formato anterior) é lido como se tivesse um único destinatário, o antigo chat_id — mesmo padrão de compatibilidade usado para outros campos legados do projeto.
+- **Configuração e segredos:** o conjunto de destinatários autorizados é um único parâmetro no SSM Parameter Store — uma lista de chat_ids separados por vírgula, sob o mesmo prefixo já usado pelos demais segredos. Nenhuma mudança de política IAM é necessária, já que a permissão cobre o prefixo inteiro.
+- **Sem limite numérico de destinatários:** o desenho não impõe um teto explícito. Fica registrado como risco a observar, não como requisito: o tempo de fan-out do envio diário e o volume de escritas no banco crescem linearmente com o número de destinatários, e a janela de envio (4.5) e a estimativa de custo (4.9) presumem um punhado de destinatários, não um número grande.
+- **Sem mudança de infraestrutura além do parâmetro de segredo:** nenhum novo recurso AWS, sem VPC/NAT, sem mudança de custo recorrente relevante.
 
 ### 4.7 Contratos do Telegram e HTTP
 
@@ -313,7 +352,7 @@ Complementar com testes de contrato nas fronteiras HTTP e de integração, e tes
 - AC30 — Documentação de operação permite configurar credenciais, diagnosticar falha e executar recuperação.
 - AC31 — Duas semanas de uso permitem a avaliação pessoal das duas frases de valor, sem exigir coleta automática.
 
-Critérios a seguir cobrem múltiplos destinatários (v2, `.scratch/v2-telegram-bot.md`):
+Critérios a seguir cobrem múltiplos destinatários (4.6.1):
 
 - AC32 — Com múltiplos destinatários configurados, uma mesma diária entrega texto idêntico, vindo de um único sorteio, a todos eles.
 - AC33 — Falha permanente de entrega a um destinatário não impede, atrasa nem encerra a entrega aos demais destinatários do mesmo pedido.
@@ -322,11 +361,16 @@ Critérios a seguir cobrem múltiplos destinatários (v2, `.scratch/v2-telegram-
 - AC36 — Um destinatário autorizado adicional usa `/frase` e `/status` com o mesmo comportamento e autenticação que o destinatário original.
 - AC37 — Um chat_id fora do conjunto configurado de destinatários continua sem resposta e sem pedido, independentemente de quantos destinatários existam.
 
+Testes específicos de múltiplos destinatários: um cenário que quebra a invariante de propósito — dois destinatários num mesmo pedido diário, uma falha permanente simulada para um deles, confirmando que o outro recebe normalmente, a frase é consumida uma única vez no ciclo e nenhuma reserva fica órfã; autorização estendida para um conjunto de chat_ids (aceitos, desconhecido recusado, grupo recusado); `/status` com desfechos diferentes por destinatário na mesma diária; leitura compatível de um pedido gravado no formato anterior (um único destinatário implícito); e concorrência do repositório de pedidos cobrindo a chave composta pedido + destinatário + índice.
+
 A suíte de CI usa fixtures e integrações simuladas para resultados reproduzíveis. Testes específicos de persistência validam atomicidade, retomada e concorrência. O aceite AWS inclui uma entrega real autorizada, /frase, /status, persistência entre versões e exercício controlado de recuperação. Não criar um ambiente permanente de dev.
 
 ## 6. Fora do escopo — Out of Scope
 
-- Múltiplos usuários além de um conjunto pequeno e fixo de destinatários privados, nomeados pela usuária (v2, `.scratch/v2-telegram-bot.md`); grupos e canais públicos continuam fora de escopo, assim como destinatários dinâmicos ou autoinscrição por interação no bot.
+- Múltiplos usuários além de um conjunto pequeno e fixo de destinatários privados, nomeados pela usuária; grupos e canais públicos continuam fora de escopo, assim como destinatários dinâmicos ou autoinscrição por interação no bot (ex.: qualquer pessoa que mandar /start virar destinatário).
+- Frases diferentes por destinatário no mesmo dia, ciclos independentes por destinatário, ou qualquer noção de "preferência" por destinatário.
+- Mensagens de ajuda (/start) diferentes por destinatário — todos recebem o mesmo texto, salvo decisão em contrário.
+- Migração retroativa de pedidos antigos (formato de um único destinatário) para o formato atual — permanecem como estão, só não são mais produzidos.
 - Interface administrativa, dashboard web e aplicativo próprio.
 - IA para gerar, comentar, corrigir autoria ou recomendar frases durante a operação.
 - Filtros por tema, favoritas, avaliações, resumos semanais ou horários por dia.
@@ -362,9 +406,17 @@ Dividir o trabalho em sessões pequenas compatíveis com menos de duas horas sem
 - Fronteira de testes: proposta registrada na seção 5 para revisão.
 - Políticas complementares: validar a janela de retentativa de extras e o tratamento conservador de entrega incerta antes da etapa 3.
 - Recursos auxiliares: validar HTTP API e armazenamento de segredos na estimativa de infraestrutura; são escolhas propostas, não serviços previamente aprovados no refino.
-- Issue tracker: não foi informado um rastreador nem seu vocabulário. A skill To Spec orienta executar /setup-matt-pocock-skills para configurá-los. Até isso ocorrer, esta spec fica na página do projeto no Notion e em Markdown; ready-for-agent é apenas triagem sugerida.
+- Issue tracker: GitHub Issues do próprio repositório é o rastreador usado para achados operacionais e de pipeline (ex.: recuperação de publicação). Planejamento e tickets de implementação, no estilo de decisão do wayfinder, continuam em Markdown local (`.scratch/frase-diaria-telegram/issues/`) por decisão de manter o rastreador público livre de ruído de planejamento — ver `ia_docs/`, um documento por ticket concluído, para o registro final de cada decisão técnica.
+
+### Histórico de extensões fundidas
+
+Cada extensão aprovada é fundida diretamente nas seções acima; esta lista registra quando e aponta para o documento arquivado com a decisão original por inteiro, incluindo o raciocínio e as alternativas descartadas.
+
+- **Múltiplos destinatários** (decidida em 2026-09-15, ticket 23; implementada nos tickets 24–27; aceite real em 2026-09-16, ticket 27) — fundida nas seções 1, 2, 3 (histórias 43–58), 4.6.1, 5 (AC32–37) e 6. Documento original arquivado em `contextIA/arquivo/2026-09-multiplos-destinatarios.md`.
 
 ### Definição de pronto
 
 MVP concluído quando os critérios técnicos aplicáveis estiverem verificados, as dependências resolvidas, o envio diário e os comandos estiverem operacionais, o histórico sobreviver às publicações e a recuperação estiver exercitada. Registrar limitações remanescentes explicitamente. A avaliação pessoal após duas semanas completa a validação de valor.
+
+Alcançado: entrega diária e sob demanda operacionais em produção, com múltiplos destinatários, `/status` por destinatário, CI/CD com publicação serializada e recuperação exercitada ao vivo (tickets 01–29). Limitação registrada: a spec não promete entrega exatamente uma vez sob falha externa ambígua (4.6.1, 6).
 

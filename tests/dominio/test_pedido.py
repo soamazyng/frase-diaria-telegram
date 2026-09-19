@@ -45,9 +45,8 @@ def test_identidade_de_um_extra_vem_do_update_id() -> None:
 
 
 def test_identidade_diaria_combina_com_o_dia_local() -> None:
-    """A partir da v2, a diária é um único pedido para todo o conjunto de
-    destinatários — a identidade não carrega mais um chat_id específico
-    (spec v2, `.scratch/v2-telegram-bot.md`)."""
+    """A diária é um único pedido para todo o conjunto de destinatários — a
+    identidade não carrega um chat_id específico (spec, 4.6.1)."""
     assert Pedido.identidade_de_diaria(dia=date(2026, 9, 7)) == "diaria#2026-09-07"
 
 

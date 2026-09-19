@@ -26,8 +26,7 @@ class PoliticaDeAcesso:
     """Quem pode falar com o bot.
 
     O bot é privado a um conjunto pequeno e fixo de destinatários: cada um é uma
-    conversa privada, identificada pelo próprio chat_id (spec v2,
-    `.scratch/v2-telegram-bot.md`).
+    conversa privada, identificada pelo próprio chat_id (spec, 4.6.1).
     """
 
     segredo_esperado: str
