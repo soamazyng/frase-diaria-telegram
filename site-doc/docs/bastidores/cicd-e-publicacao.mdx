@@ -1,0 +1,70 @@
+---
+title: CI/CD e publicação
+description: Por que a publicação é serializada, vinculada ao commit, e o merge nunca é automático.
+sidebar_position: 3
+---
+
+# CI/CD e publicação
+
+Existe um único ambiente de produção — não há um "staging" separado onde
+testar com segurança antes de valer pra usuária real. Isso empurrou boa
+parte do desenho do pipeline: cada publicação precisa ser verificável,
+reversível e nunca conflitar com outra rodando ao mesmo tempo.
+
+## A ordem que o pipeline segue, sempre
+
+1. Capturar o SHA imutável do commit publicado e localizar o PR
+   correspondente.
+2. Rodar testes, análise estática e validar o template de infraestrutura.
+3. Construir o artefato **uma única vez**, identificado pelo SHA e por um
+   checksum.
+4. Entrar numa exclusão mútua de produção — só uma publicação (ou
+   recuperação) mexe no ambiente por vez — e reconferir se o PR e o SHA
+   ainda são os mesmos depois de esperar a vez.
+5. Publicar exatamente o artefato que foi avaliado — nunca reconstruir nesse
+   ponto, pra não publicar algo diferente do que os testes validaram.
+6. Verificar saúde, versão ativa e dependências depois de publicar — sem
+   consumir uma frase real nem mandar mensagem de teste a cada commit.
+7. Só then liberar o merge manual, com todas as verificações aprovadas.
+
+O merge para a branch principal é sempre manual. Nada é publicado depois do
+merge — a publicação já aconteceu antes, a partir da branch de
+desenvolvimento; o merge só formaliza que aquele código passou a ser a
+versão estável.
+
+## Por que não confiar na ordem de chegada dos eventos
+
+Publicação e recuperação de uma versão anterior competem pelo mesmo
+ambiente. Dois pushes seguidos, ou uma falha seguida de uma tentativa de
+recuperação, podem gerar eventos que chegam **fora de ordem** — o GitHub
+Actions não garante FIFO entre execuções concorrentes. A regra que resolveu
+isso: depois de entrar na exclusão mútua, sempre reconferir se ainda é a
+versão mais recente antes de agir. Um evento antigo nunca sobrescreve uma
+publicação mais nova, mesmo que ele tenha começado a rodar primeiro.
+
+## Proteção contra publicar código não testado
+
+A branch principal é protegida: nenhum push direto, e o merge só é permitido
+com os checks obrigatórios aprovados — incluindo a publicação de verdade,
+não só os testes. Isso foi exercitado ao vivo, não só lido na documentação
+do GitHub: tentar burlar a proteção, de propósito, pra confirmar que ela
+realmente bloqueia.
+
+## Recuperação, por cenário
+
+- **Falha no deploy**: volta pra última publicação saudável anterior à
+  tentativa.
+- **Falha no diagnóstico pós-publicação**: mesmo caminho — recupera a
+  publicação saudável anterior.
+- **Um PR fechado sem merge**: recupera a versão estável anterior ao PR — não
+  uma candidata do mesmo PR que nunca chegou a ser aceita.
+- **Primeiro deploy, sem nenhuma versão anterior**: reverte o que for
+  possível, desliga os envios automáticos, e documenta explicitamente que
+  não há versão operacional recuperável — silêncio nunca é a resposta certa
+  aqui.
+
+Um reconciliador dedicado, rodando por hora, cobre o caso em que o próprio
+processo de publicação ou recuperação é interrompido no meio — por exemplo,
+o runner do GitHub cai antes de terminar. Ele reconsulta o estado real antes
+de agir, pelo mesmo motivo do item acima: nunca presumir que o que foi visto
+por último ainda é verdade.

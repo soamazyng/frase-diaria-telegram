@@ -6,6 +6,9 @@
 ![Testes](https://img.shields.io/badge/testes-376%20passando-success)
 ![Status](https://img.shields.io/badge/MVP-concluído-success)
 ![Uso](https://img.shields.io/badge/uso-pessoal%20%2F%20privado-lightgrey)
+[![Documentação](https://img.shields.io/badge/documentação-site-0088CC?logo=telegram&logoColor=white)](https://soamazyng.github.io/frase-diaria-telegram/)
+
+📖 **[Ver a documentação do projeto](https://soamazyng.github.io/frase-diaria-telegram/)** — visão de produto, como funciona e os bastidores técnicos (aprendizados com IA, infraestrutura e CI/CD).
 
 Bot pessoal de usuária única que envia uma frase por dia às 08:00
 (`America/Sao_Paulo`, inclusive fins de semana) no Telegram, lendo a coleção

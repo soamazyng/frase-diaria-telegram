@@ -1,0 +1,71 @@
+name: Publicar documentação
+
+# Só a partir de main: a documentação reflete a versão estável e publicada,
+# nunca o que ainda está em desenvolvimento em develop. Só dispara quando
+# algo em site-doc/ ou no próprio workflow muda, para não rodar em toda
+# publicação da aplicação. workflow_dispatch permite republicar manualmente
+# sem precisar de um commit vazio.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "site-doc/**"
+      - ".github/workflows/site-doc.yml"
+  workflow_dispatch: {}
+
+# Negado por padrão no topo, como nos demais workflows deste repositório —
+# a elevação real mora só em cada job.
+permissions: {}
+
+# Recomendação oficial do GitHub Pages: nunca duas publicações do site
+# simultâneas, mas sem cancelar uma em andamento (evita um deploy parcial).
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  construir:
+    name: Construir o site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site-doc/package-lock.json
+
+      - name: Instalar dependências
+        working-directory: site-doc
+        run: npm ci
+
+      - name: Construir
+        working-directory: site-doc
+        run: npm run build
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site-doc/build
+
+  publicar:
+    name: Publicar no GitHub Pages
+    needs: construir
+    runs-on: ubuntu-latest
+    permissions:
+      # As duas permissões que o deploy-pages exige: escrever o ambiente de
+      # Pages e emitir o token OIDC que autentica a publicação.
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Publicar
+        id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

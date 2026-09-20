@@ -1,0 +1,78 @@
+.phone {
+  max-width: 360px;
+  margin: 2rem auto;
+  border-radius: 28px;
+  background: var(--ifm-navbar-background-color);
+  box-shadow: 0 20px 50px rgba(0, 20, 40, 0.18);
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  background: var(--frase-bubble-accent);
+  color: white;
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.headerName {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.headerStatus {
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.body {
+  padding: 1.1rem 0.9rem;
+  min-height: 140px;
+  background-image: radial-gradient(circle at 1px 1px, rgba(0, 136, 204, 0.06) 1px, transparent 0);
+  background-size: 16px 16px;
+}
+
+.bubble {
+  background: var(--frase-bubble-bg);
+  box-shadow: var(--frase-bubble-shadow);
+  border-radius: 14px 14px 14px 4px;
+  padding: 0.75rem 0.9rem;
+  max-width: 85%;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.author {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.time {
+  display: block;
+  text-align: right;
+  font-size: 0.68rem;
+  opacity: 0.55;
+  margin-top: 0.35rem;
+}

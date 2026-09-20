@@ -1,0 +1,76 @@
+---
+title: Aprendizados com IA
+description: Como usar skills de agente mudou a forma de conduzir este projeto, sessão a sessão.
+sidebar_position: 1
+---
+
+# Aprendizados com IA
+
+Esse é um projeto de aprendizado deliberado: aprender a trabalhar com um
+agente de IA numa base de código real, com menos de duas horas por semana de
+dedicação. O código em si é só metade da história — a outra metade é como o
+processo de trabalhar com IA foi mudando ao longo do caminho.
+
+## De "peça e receba" para um fluxo com disciplina
+
+No começo, cada sessão era uma conversa livre: pedir uma funcionalidade,
+revisar o que saía, seguir em frente. Funcionava, mas cada sessão reaprendia
+sozinha as mesmas lições — sobre concorrência, sobre segredos, sobre CI/CD —
+até uma regra escrita virar `rules.md`: um catálogo de armadilhas já mordidas,
+cada uma com o incidente real que a originou. Regra sem incidente vira
+regra ignorada; regra com história vira hábito.
+
+Depois vieram as **skills** — instruções reutilizáveis que o agente carrega
+antes de agir, em vez de reinventar o processo a cada vez:
+
+- **TDD** e **Clean Code** antes de qualquer implementação: escrever o teste
+  que falha, ver falhar pela razão certa, só então corrigir.
+- **code-review** em dois eixos separados — o código segue os padrões do
+  repositório? o código faz o que o ticket pediu? — porque um código pode
+  passar num eixo e falhar no outro, e misturar os dois esconde isso.
+- **grilling** e **domain-modeling** para decisões de produto: em vez de eu
+  descrever o que eu queria e o agente implementar direto, ele me interroga
+  em rodadas, pergunta por pergunta, até não sobrar ambiguidade.
+- **wayfinder** — usado para planejar justamente esta documentação — para
+  esforços grandes demais para uma sessão só: mapeia decisões pendentes como
+  tickets, em vez de tentar decidir tudo de uma vez.
+
+## O incidente que ensinou a lição mais cara
+
+A frase de um dia inteiro não chegou. A investigação levou a um mascaramento
+de erro **intencional** (por segurança — evitar vazar detalhe sensível em
+log) que, ironicamente, também escondia a causa real de uma falha genuína.
+
+A causa raiz, descoberta só depois de logar seletivamente o tipo da exceção
+e o código de erro da AWS (nunca a mensagem completa, que poderia carregar
+detalhe sensível): faltava uma permissão de IAM — `dynamodb:ConditionCheckItem`
+— numa transação que checava uma condição sem escrever nela. Uma ação IAM
+distinta de `TransactWriteItems`, fácil de esquecer porque a maioria dos
+exemplos de transação não usa esse padrão específico.
+
+A lição não foi só técnica. Foi sobre **como investigar em produção com um
+agente**: rodar o código manualmente, localmente, com credenciais de
+desenvolvedor, pode mascarar um problema de permissão que só existe na role
+real da Lambda — as duas credenciais são principals diferentes, com
+permissões diferentes. "Funcionou pra mim" não prova que funciona pra
+produção.
+
+## Sanitização de log é segurança, não desculpa para apagar o diagnóstico
+
+Um princípio que ficou mais claro ao longo do projeto: nunca logar a
+mensagem completa de uma exceção (pode carregar URL, corpo de resposta,
+token), mas sempre logar algo — o nome da classe, um código de erro
+categorizado — que baste pra apontar onde investigar sem reproduzir o
+incidente do zero. Um log totalmente vazio "por segurança" não é mais
+seguro; só é mais caro de diagnosticar.
+
+## Documentação como fonte única, não como arquivo que nunca mais se abre
+
+A spec do projeto passou por uma extensão real (múltiplos destinatários) que
+por um tempo virou um documento separado — uma "spec v2" com regra de
+precedência sobre a v1. Funcionou, mas criava a pergunta permanente de qual
+documento vale em qual seção. Depois de pesquisar como outras ferramentas de
+desenvolvimento orientado a spec resolvem isso, o padrão que ficou foi:
+**uma única spec viva**, e cada extensão aprovada é fundida direto nela,
+com o documento original preservado à parte, arquivado, como registro
+histórico — nunca mais consultado no dia a dia, mas nunca perdido.

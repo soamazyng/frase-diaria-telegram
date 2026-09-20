@@ -1,0 +1,52 @@
+/**
+ * Identidade visual inspirada nas cores do Telegram — não o logo oficial,
+ * só a paleta (azul característico) e o estilo de bolha de mensagem.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, sans-serif;
+
+  --ifm-color-primary: #0088cc;
+  --ifm-color-primary-dark: #007ab8;
+  --ifm-color-primary-darker: #0074ad;
+  --ifm-color-primary-darkest: #005f8f;
+  --ifm-color-primary-light: #0096e0;
+  --ifm-color-primary-lighter: #1a9de2;
+  --ifm-color-primary-lightest: #2aabee;
+
+  --ifm-background-color: #f8f9fa;
+  --ifm-navbar-background-color: #ffffff;
+  --ifm-footer-background-color: #17212b;
+
+  --frase-bubble-bg: #ffffff;
+  --frase-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --frase-bubble-accent: linear-gradient(135deg, #2aabee 0%, #229ed9 100%);
+  --frase-hero-bg: linear-gradient(160deg, #e8f6ff 0%, #f8f9fa 60%);
+
+  --docusaurus-highlighted-code-line-bg: rgba(0, 136, 204, 0.1);
+}
+
+:root[data-theme='dark'] {
+  --ifm-color-primary: #2aabee;
+  --ifm-color-primary-dark: #1a9de2;
+  --ifm-color-primary-darker: #1595d6;
+  --ifm-color-primary-darkest: #127bb2;
+  --ifm-color-primary-light: #45b8f1;
+  --ifm-color-primary-lighter: #57c0f2;
+  --ifm-color-primary-lightest: #83d1f6;
+
+  --ifm-background-color: #17212b;
+  --ifm-navbar-background-color: #202b36;
+  --ifm-background-surface-color: #232e3c;
+
+  --frase-bubble-bg: #232e3c;
+  --frase-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --frase-hero-bg: linear-gradient(160deg, #1c2733 0%, #17212b 60%);
+}
+
+.hero--frase {
+  background: var(--frase-hero-bg);
+  padding: 4rem 0 3rem;
+}
