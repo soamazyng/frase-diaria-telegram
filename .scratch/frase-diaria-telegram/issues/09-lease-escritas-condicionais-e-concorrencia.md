@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Intenção por parte, retomada e entrega incerta.
 
-**Status:** concluído em 2026-09-07 — ver `docs/09-lease-escritas-condicionais-e-concorrencia.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/09-lease-escritas-condicionais-e-concorrencia.md`
 
 - [x] Reserva de pedido e de frase acontece por escrita condicional ou transação; não há janela em que dois executores reservem a mesma frase.
 - [x] O estado do ciclo e a sequência de envio são protegidos por lease de duração limitada com token de versão.

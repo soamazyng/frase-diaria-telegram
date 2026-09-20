@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Elegibilidade e estimativa de custo AWS/GitHub; 02 — Esqueleto do projeto e /health local.
 
-**Status:** concluído em 2026-09-07 — procedimento em `docs/03-publicacao-manual.md`
+**Status:** concluído em 2026-09-07 — procedimento em `ia_docs/03-publicacao-manual.md`
 
 - [x] SAM declara Lambda, HTTP API, tabela DynamoDB, grupo de logs e permissões IAM específicas por função.
 - [x] Recursos duráveis de dados ficam em stack separada dos recursos de aplicação, com proteção contra exclusão e retenção configuradas.

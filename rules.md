@@ -20,7 +20,7 @@ o pedido não mencionar skills. Aplica-se também à continuação de tickets:
    alterado e exige nova verificação.
 4. Registre no documento da entrega as skills aplicadas, regras atendidas ou
    exceções justificadas, testes executados e resultado dos dois reviews.
-   Atualize `docs/code-review-tickets.md` quando houver ticket. Marque **OK**
+   Atualize `ia_docs/code-review-tickets.md` quando houver ticket. Marque **OK**
    somente após executar a verificação, sem achados impeditivos pendentes.
 
 Skills locais: `.agents/skills/implement/SKILL.md` e
@@ -218,7 +218,7 @@ segredos com `hmac.compare_digest`. Ver `dominio/autorizacao.py`.
 **Status HTTP governa reentrega do Telegram.** 200 encerra, 5xx faz reentregar.
 Devolva 200 para o que não muda com nova tentativa — recusa de acesso, update
 irrelevante, corpo inválido — e 5xx só quando reentregar tem chance de dar certo,
-como falha de persistência. A tabela completa está em `docs/04-webhook-telegram.md`.
+como falha de persistência. A tabela completa está em `ia_docs/04-webhook-telegram.md`.
 
 **Persista antes de confirmar.** Responder à usuária sem ter gravado deixa um
 comando respondido porém não registrado, que volta na reentrega e é respondido de
@@ -243,7 +243,7 @@ reconciliador de publicações ficou de hora em hora por isso.
 **Antes de adicionar um serviço AWS, verifique se ele tem franquia permanente.**
 A conta já passou dos 12 meses, então só vale o *Always Free*. Lambda, DynamoDB e
 EventBridge Scheduler estão cobertos com folga; API Gateway custa centavos
-no volume do projeto. Registre qualquer novidade em `docs/01-custo-e-elegibilidade.md`.
+no volume do projeto. Registre qualquer novidade em `ia_docs/01-custo-e-elegibilidade.md`.
 
 **Prefira SSM Parameter Store a Secrets Manager**: gratuito contra US$0,40 por
 segredo/mês, com o mesmo controle por IAM.

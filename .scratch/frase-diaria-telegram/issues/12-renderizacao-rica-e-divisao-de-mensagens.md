@@ -4,7 +4,7 @@
 
 **Blocked by:** 10 — Sincronização com Notion substitui as fixtures.
 
-**Status:** concluído em 2026-09-07 — ver `docs/12-renderizacao-rica-e-divisao-de-mensagens.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/12-renderizacao-rica-e-divisao-de-mensagens.md`
 
 - [x] Renderização em HTML suportado pela Bot API, com escape correto de caracteres.
 - [x] Negrito, itálico, código e links preservados; cores e fundos do Notion viram destaque em negrito quando não houver equivalente.

@@ -8,7 +8,7 @@ resultados observáveis, mas deixa de conhecer os detalhes do canal de envio.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** concluído em 2026-09-16 — ver `docs/28-extrair-entrega-por-destinatario.md`
+**Status:** concluído em 2026-09-16 — ver `ia_docs/28-extrair-entrega-por-destinatario.md`
 
 - [x] O módulo de entrega expõe uma interface pequena que recebe o pedido, a frase e o
       sequencial da tentativa e devolve um resultado tipado com desfecho agregado, motivo,

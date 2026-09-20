@@ -90,8 +90,8 @@ class Pedido:
 
     `destinatarios` é quem recebe esta entrega: um extra tem exatamente um
     (quem pediu); a diária carrega todos os destinatários autorizados,
-    compartilhando uma única reserva/consumo de frase no ciclo (spec v2,
-    `.scratch/v2-telegram-bot.md`).
+    compartilhando uma única reserva/consumo de frase no ciclo
+    (spec, 4.6.1).
     """
 
     identidade: str
@@ -168,7 +168,7 @@ class Pedido:
         destinatário. A partir da v2, a mesma parte de um pedido compartilhado
         pode ter desfechos diferentes por destinatário (confirmada para um,
         incerta para outro), então o destinatário passa a fazer parte da
-        identidade (spec v2, `.scratch/v2-telegram-bot.md`).
+        identidade (spec, 4.6.1).
         """
         return f"{pedido}#dest#{destinatario}#parte#{indice}"
 

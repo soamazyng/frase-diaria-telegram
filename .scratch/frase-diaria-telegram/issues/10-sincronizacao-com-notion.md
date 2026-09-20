@@ -4,8 +4,8 @@
 
 **Blocked by:** 05 — /frase entrega uma frase de fixture.
 
-**Status:** concluído em 2026-09-07 — ver `docs/10-sincronizacao-com-notion.md`
-e `docs/11-snapshot-duravel-cache-e-fallback.md` (persistência e cache que
+**Status:** concluído em 2026-09-07 — ver `ia_docs/10-sincronizacao-com-notion.md`
+e `ia_docs/11-snapshot-duravel-cache-e-fallback.md` (persistência e cache que
 demonstram a conservação do snapshot anterior).
 
 - [x] A integração de produção tem acesso de leitura à página, com credencial cadastrada fora do repositório. — cadastrada pela usuária e verificada com uma chamada real e não-mutante (77 frases encontradas).

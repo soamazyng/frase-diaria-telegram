@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Lease, escritas condicionais e concorrência; 10 — Sincronização com Notion substitui as fixtures.
 
-**Status:** concluído em 2026-09-07 — ver `docs/11-snapshot-duravel-cache-e-fallback.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/11-snapshot-duravel-cache-e-fallback.md`
 
 - [x] Snapshot persistido com identificador, instante, resultado de validação, quantidade e referência ao snapshot ativo. — simplificado para um único item ativo, sem histórico de versões (documentado como decisão consciente).
 - [x] A sincronização acontece antes de cada pedido diário ou extra, e novamente antes de uma nova tentativa que vá enviar conteúdo. — todo `_processar` sincroniza fresco, sem cache dentro do worker.

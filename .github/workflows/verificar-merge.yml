@@ -8,7 +8,7 @@ name: Verificar merge para main
 # `pull_request` (não `pull_request_target`): token só leitura por padrão,
 # sem acesso a segredos além do que este job declara explicitamente. Não há
 # checkout, build nem execução de código do PR — só chamadas de API sobre o
-# evento já mergeado (docs/pesquisa-agents-seguranca.md, "Inputs não
+# evento já mergeado (ia_docs/pesquisa-agents-seguranca.md, "Inputs não
 # confiáveis e triggers privilegiados").
 on:
   pull_request:

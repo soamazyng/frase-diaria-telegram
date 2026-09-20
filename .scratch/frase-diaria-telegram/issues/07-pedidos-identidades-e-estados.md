@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 — Seleção sem repetição e ciclos persistidos.
 
-**Status:** concluído em 2026-09-07 — ver `docs/07-pedidos-identidades-e-estados.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/07-pedidos-identidades-e-estados.md`
 
 - [x] Identidades implementadas: diária como conversa autorizada mais data local; extra como bot mais update_id; parte como pedido mais índice; tentativa como pedido mais número sequencial.
 - [x] Repetir o evento diário, o webhook ou a recuperação do worker mantém a mesma identidade de pedido (AC02).

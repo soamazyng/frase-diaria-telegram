@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Webhook autenticado, /start e ajuda.
 
-**Status:** concluído em 2026-09-07 — ver `docs/05-entrega-de-frase.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/05-entrega-de-frase.md`
 
 - [x] `/frase` cria um pedido extra persistido e tenta acordar o worker; a resposta HTTP não depende de trabalho em segundo plano.
 - [x] O worker processa pedidos lidos da persistência, não do corpo da requisição.

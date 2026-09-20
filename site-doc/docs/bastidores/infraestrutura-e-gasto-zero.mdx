@@ -1,0 +1,58 @@
+---
+title: Infraestrutura e gasto zero
+description: Por que cada peça de infraestrutura foi escolhida — e por que várias foram descartadas.
+sidebar_position: 2
+---
+
+# Infraestrutura e gasto zero
+
+A meta de custo recorrente é R$0 — não como promessa de gratuidade eterna,
+mas como restrição de design: antes de adicionar qualquer serviço, verificar
+se ele tem franquia **permanente** (Always Free), não só um período de teste
+de 12 meses.
+
+## As peças escolhidas
+
+- **AWS Lambda** para todo o código: webhook, envio agendado e
+  reconciliador. Sem servidor ligado 24 horas — cada execução dura segundos,
+  algumas vezes por dia.
+- **DynamoDB** como único banco de dados: pedidos, ciclos, histórico,
+  segredos de configuração de sincronização. Cabe com folga no Always Free.
+- **EventBridge Scheduler** para dois relógios: um que dispara a diária às
+  8h no fuso de São Paulo (o próprio serviço resolve o fuso — sem conversão
+  manual pra UTC no código), e outro que roda a cada 5 minutos recuperando
+  pedidos pendentes.
+- **SSM Parameter Store** (`SecureString`) para todo segredo — token do bot,
+  credencial do Notion, segredo do webhook. Gratuito, com o mesmo controle
+  de acesso via IAM que uma opção paga ofereceria.
+
+## O que foi descartado, e por quê
+
+- **AWS Secrets Manager**: cobra por segredo por mês. O Parameter Store faz
+  o mesmo trabalho de graça.
+- **VPC e NAT Gateway**: um NAT Gateway sozinho custaria dezenas de dólares
+  por mês. Nenhum requisito deste projeto exige rede privada — Lambda,
+  DynamoDB e as APIs externas (Notion, Telegram) são todas alcançáveis sem
+  isso.
+- **Um ambiente de desenvolvimento permanente na AWS**: existe só um
+  ambiente de produção. Testar infraestrutura nova acontece publicando de
+  verdade, com cuidado, não mantendo uma cópia paralela ligada o tempo todo.
+- **Servidor sempre ligado, Docker, banco relacional próprio**: qualquer um
+  desses viraria custo fixo mensal para um bot que roda por segundos, poucas
+  vezes ao dia.
+
+## O reconciliador que quase custou caro
+
+Existem dois "reconciliadores" no projeto, fáceis de confundir:
+
+Um deles recupera **pedidos de envio** perdidos — roda no Lambda a cada 5
+minutos, praticamente de graça, porque Lambda cobra por execução, não por
+tempo ligado.
+
+O outro recupera **publicações** que falharam no meio do caminho — roda como
+workflow do GitHub Actions. A tentação óbvia era rodá-lo também a cada 5
+minutos, pelo mesmo motivo. Mas o GitHub Actions arredonda cada execução
+para 1 minuto cheio de cobrança: a cada 5 minutos, isso são 8.640 minutos por
+mês — muito além dos 3.000 inclusos no plano usado, quase US$34 a mais só
+nesse workflow. A decisão final foi rodá-lo de hora em hora: cobre o mesmo
+cenário de recuperação, a um custo compatível com a meta.

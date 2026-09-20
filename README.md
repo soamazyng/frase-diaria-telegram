@@ -6,6 +6,9 @@
 ![Testes](https://img.shields.io/badge/testes-376%20passando-success)
 ![Status](https://img.shields.io/badge/MVP-concluído-success)
 ![Uso](https://img.shields.io/badge/uso-pessoal%20%2F%20privado-lightgrey)
+[![Documentação](https://img.shields.io/badge/documentação-site-0088CC?logo=telegram&logoColor=white)](https://soamazyng.github.io/frase-diaria-telegram/)
+
+📖 **[Ver a documentação do projeto](https://soamazyng.github.io/frase-diaria-telegram/)** — visão de produto, como funciona e os bastidores técnicos (aprendizados com IA, infraestrutura e CI/CD).
 
 Bot pessoal de usuária única que envia uma frase por dia às 08:00
 (`America/Sao_Paulo`, inclusive fins de semana) no Telegram, lendo a coleção
@@ -323,7 +326,7 @@ reagir: o runner morreu no meio de uma publicação, ou o PR `develop → main`
 foi fechado sem merge. Roda de hora em hora — não a cada 5 minutos — porque
 essa diferença custaria ~US$34/mês em minutos excedentes do GitHub Actions,
 mais caro que toda a infraestrutura AWS somada; a decisão de custo está em
-`rules.md` e `docs/20-reconciliador-de-publicacoes-e-dados.md`.
+`rules.md` e `ia_docs/20-reconciliador-de-publicacoes-e-dados.md`.
 
 ### Verificação pós-merge
 
@@ -413,7 +416,7 @@ operação normal:
 
 Nenhum serviço do projeto sai da franquia *Always Free* da AWS; o custo
 recorrente real é uma fração de centavo por mês. Detalhes e metodologia em
-`docs/01-custo-e-elegibilidade.md` e `docs/22-documentacao-de-operacao-e-aceite-real.md`.
+`ia_docs/01-custo-e-elegibilidade.md` e `ia_docs/22-documentacao-de-operacao-e-aceite-real.md`.
 
 ## Estado do projeto
 
@@ -432,7 +435,7 @@ implementação: a avaliação pessoal de valor depois de duas semanas de uso
 - `AGENTS.md` / `CLAUDE.md` — como trabalhar no projeto.
 - `rules.md` — armadilhas operacionais já pagas, cada uma com o incidente que
   a originou.
-- `docs/` — um documento por ticket, com decisão técnica, verificação real
+- `ia_docs/` — um documento por ticket, com decisão técnica, verificação real
   contra AWS/GitHub e o que ficou provado.
 - `.scratch/frase-diaria-telegram/issues/` — os 22 tickets, numerados em
   ordem de dependência.

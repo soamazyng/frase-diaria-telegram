@@ -1,0 +1,36 @@
+---
+title: A coleção
+description: De onde vêm as frases e como cada uma é escolhida.
+sidebar_position: 2
+---
+
+# A coleção
+
+A fonte de tudo é uma página do Notion — uma lista de frases que já vinha
+sendo mantida antes do bot existir. Cada item da lista, com seu autor e
+formatação preservados, é uma frase candidata a ser entregue.
+
+## Nada é inventado
+
+Nenhuma frase é gerada, corrigida ou comentada por inteligência artificial.
+O bot só lê o que já está escrito na coleção — negrito, itálico, links e
+autoria incluídos — e entrega exatamente aquilo.
+
+Quando uma frase é editada na coleção, a próxima entrega dela já reflete a
+mudança. Quando uma é excluída, ela some das próximas seleções, mas o que já
+foi entregue no passado continua registrado no histórico — apagar da fonte
+não reescreve o que a usuária já recebeu.
+
+## Sem repetir sem motivo
+
+A escolha de qual frase entregar não é totalmente aleatória: o bot mantém
+registro de quais frases já saíram desde a última vez que a coleção inteira
+foi percorrida. Só depois de esgotar tudo — todas as frases ativas, uma vez
+cada — o ciclo recomeça, com uma nova ordem sorteada.
+
+## Quando o Notion está fora do ar
+
+A cada sincronização, se a coleção não puder ser lida por completo, o bot não
+arrisca perder conteúdo: mantém a última versão válida conhecida e continua
+entregando a partir dela. Uma leitura parcial nunca é tratada como "a coleção
+mudou" — só uma leitura completa substitui o que já se sabe.

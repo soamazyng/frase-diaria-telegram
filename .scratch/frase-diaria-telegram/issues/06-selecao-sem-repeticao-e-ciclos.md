@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — /frase entrega uma frase de fixture.
 
-**Status:** concluído em 2026-09-07 — ver `docs/06-ciclos-e-selecao.md`
+**Status:** concluído em 2026-09-07 — ver `ia_docs/06-ciclos-e-selecao.md`
 
 - [x] A seleção sorteia entre frases ativas ainda não consumidas nem reservadas no ciclo.
 - [x] Com coleção estável de N frases, N entregas no ciclo têm identidades distintas (AC04).

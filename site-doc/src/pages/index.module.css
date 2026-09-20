@@ -1,0 +1,87 @@
+.heroBanner {
+  padding: 3rem 0;
+  overflow: hidden;
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 2.5rem;
+  align-items: center;
+  text-align: left;
+}
+
+@media screen and (max-width: 900px) {
+  .heroGrid {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+}
+
+.heroTitle {
+  font-size: 2.6rem;
+  line-height: 1.15;
+}
+
+.heroSubtitle {
+  font-size: 1.15rem;
+  opacity: 0.85;
+  max-width: 46ch;
+}
+
+.buttons {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+@media screen and (max-width: 900px) {
+  .heroSubtitle {
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .buttons {
+    justify-content: center;
+  }
+}
+
+.destaques {
+  padding: 3rem 0 4rem;
+}
+
+.destaquesGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+}
+
+@media screen and (max-width: 996px) {
+  .destaquesGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media screen and (max-width: 600px) {
+  .destaquesGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.destaqueCard {
+  padding: 1.25rem;
+  border-radius: 12px;
+  background: var(--ifm-background-surface-color, #fff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.destaqueCard h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.4rem;
+  color: var(--ifm-color-primary);
+}
+
+.destaqueCard p {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}

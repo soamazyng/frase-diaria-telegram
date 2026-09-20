@@ -47,7 +47,7 @@ conhece `python3.13`. Empacotamento e verificação do artefato: `rules.md`.
 ### Segredos
 
 No SSM Parameter Store, prefixo `/frase-diaria/`: `telegram-bot-token`,
-`telegram-chat-ids` (v2, `.scratch/v2-telegram-bot.md` — lista de destinatários
+`telegram-chat-ids` (spec, 4.6.1 — lista de destinatários
 autorizados separados por vírgula; inclui pelo menos `<TELEGRAM_CHAT_ID_PRINCIPAL>`, a conversa
 da usuária; o id do bot é <TELEGRAM_BOT_ID> e não serve), `webhook-secret`,
 `notion-token` (integração interna, capacidade só de leitura de conteúdo;
@@ -182,8 +182,25 @@ Já fechadas — implemente conforme descrito, não reabra:
 
 Não feche estes pontos sem confirmação da usuária:
 - Recursos auxiliares propostos, não aprovados no refino: HTTP API, cache S3, armazenamento de segredos.
-- Rastreador de issues e vocabulário de triagem não configurados; `ready-for-agent` é triagem sugerida, não label aplicada.
 
 ## Tickets
 
-O trabalho está quebrado em 22 tickets em `.scratch/frase-diaria-telegram/issues/`, numerados em ordem de dependência (bloqueadores primeiro). Cada arquivo declara seu **Blocked by**. Trabalhe a fronteira: qualquer ticket cujos bloqueadores estejam prontos. Os tickets 01 e 02 não têm bloqueadores.
+O trabalho está quebrado em tickets em `.scratch/frase-diaria-telegram/issues/`, numerados em ordem de dependência (bloqueadores primeiro). Cada arquivo declara seu **Blocked by**. Trabalhe a fronteira: qualquer ticket cujos bloqueadores estejam prontos. Os tickets 01 e 02 não têm bloqueadores.
+
+Os tickets já concluídos (01–29) ficam ali como registro histórico. Planejamento novo
+(wayfinder e demais skills de engenharia) usa GitHub Issues deste repositório — ver
+`## Agent skills` abaixo.
+
+## Agent skills
+
+### Issue tracker
+
+Trabalho novo (wayfinder, to-tickets, triage, to-spec) usa GitHub Issues deste repositório. Ver `ia_docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Rótulos padrão das cinco skills (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), sem renomeação. Ver `ia_docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` (ainda não criado) e `ia_docs/adr/` na raiz do repositório — `docs/adr/` não se aplica aqui, já que `docs/` está reservada ao futuro site Docusaurus. Ver `ia_docs/agents/domain.md`.

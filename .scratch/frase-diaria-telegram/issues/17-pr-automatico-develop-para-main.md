@@ -4,7 +4,7 @@
 
 **Blocked by:** 16 — Bootstrap OIDC AWS e base do GitHub.
 
-**Status:** concluído em 2026-09-08 — ver `docs/17-pr-automatico-develop-para-main.md`
+**Status:** concluído em 2026-09-08 — ver `ia_docs/17-pr-automatico-develop-para-main.md`
 
 - [x] O gatilho principal é o push remoto para `develop`.
 - [x] Havendo diferenças para `main`, um PR `develop → main` é criado se ainda não existir; existindo, o trabalho continua no mesmo PR (AC19).

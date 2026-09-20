@@ -10,7 +10,7 @@ operacional; detalhes de produto, incidentes e justificativas permanecem nas fon
   o que não mapeia é escopo novo e exige decisão da usuária.
 - Segurança AWS/GitHub Actions: antes de alterar `infra/`, `.github/workflows/`, autenticação,
   logs, publicação, integrações com credencial ou segredos, leia `rules.md` e
-  `docs/pesquisa-agents-seguranca.md` por inteiro.
+  `ia_docs/pesquisa-agents-seguranca.md` por inteiro.
 - `rules.md` é a fonte de verdade das armadilhas operacionais já ocorridas. Não duplique suas
   receitas aqui nem substitua um teste real por uma suposição sobre YAML ou permissões.
 - Preserve alterações existentes no diretório de trabalho. Inspecione `git status` e os diffs
@@ -45,7 +45,7 @@ operacional; detalhes de produto, incidentes e justificativas permanecem nas fon
   task/ticket/spec. Ela exige `/implement` + `/python-clean-code`, testes e `/code-review` final.
 - **Padrão obrigatório de issue:** ao concluir uma task/ticket, atualize o arquivo da issue em
   `.scratch/frase-diaria-telegram/issues/<numero>-<nome>.md` para o padrão abaixo:
-  - `Status: concluído em YYYY-MM-DD — ver `docs/<numero>-<nome>.md``
+  - `Status: concluído em YYYY-MM-DD — ver `ia_docs/<numero>-<nome>.md``
   - marcar todos os itens de checklist como `[x]`
   - usar o mesmo padrão da issue 06/07, sem “ready-for-agent” nem “implemented” em arquivo finalizado
 - **Commit por ticket:** cada task/ticket concluída deve ter um commit separado, com mensagem

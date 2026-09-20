@@ -7,7 +7,7 @@ comportamento de hoje, estendido de um chat_id para um conjunto.
 
 **Blocked by:** 23 — Fechar decisões abertas da spec v2 e atualizar a spec v1.
 
-**Status:** concluído em 2026-09-15 — ver `docs/24-autorizacao-multiautorizada.md`
+**Status:** concluído em 2026-09-15 — ver `ia_docs/24-autorizacao-multiautorizada.md`
 
 - [x] `PoliticaDeAcesso` passa a aceitar um conjunto de chat_ids autorizados, mantendo a
       ordem de verificação (segredo antes de conversa) e `hmac.compare_digest` no segredo.
